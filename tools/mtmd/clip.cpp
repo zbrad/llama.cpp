@@ -10,6 +10,8 @@
 #include "ggml-backend.h"
 #include "gguf.h"
 
+#include "llama-ollama-compat.h"
+
 #include <algorithm>
 #include <cassert>
 #include <cmath>
@@ -1191,6 +1193,11 @@ struct clip_model_loader {
         }
 
         ctx_meta.reset(meta);
+
+        // If this is an Ollama-format monolithic GGUF (text + embedded
+        // vision), translate its metadata and tensor names into the
+        // upstream mmproj shape so the rest of this loader runs unchanged.
+        llama_ollama_compat::translate_clip_metadata(ctx_gguf.get(), meta);
 
         const int n_tensors = gguf_get_n_tensors(ctx_gguf.get());
 
@@ -3609,6 +3616,7 @@ struct clip_model_loader {
                     auto it_off = tensor_offset.find(t->name);
                     GGML_ASSERT(it_off != tensor_offset.end() && "no offset for tensor");
                     const size_t offset = it_off->second;
+                    if (llama_ollama_compat::maybe_load_tensor(cur, fname.c_str(), offset, buft)) continue;
                     fin.seekg(offset, std::ios::beg);
                     if (!fin) {
                         throw std::runtime_error(string_format("%s: failed to seek for tensor %s\n", __func__, t->name));
