@@ -55,6 +55,27 @@
 /autogen-*.md
 /common/build-info.cpp
 
+# CMake in-source build artifacts
+CMakeFiles/
+CMakeCache.txt
+CTestTestfile.cmake
+DartConfiguration.tcl
+cmake_install.cmake
+compile_commands.json
+*.pc
+*.so.*
+ggml/ggml-config.cmake
+ggml/ggml-version.cmake
+app/Makefile
+common/Makefile
+src/Makefile
+ggml/src/ggml-cuda/Makefile
+tools/mtmd/Makefile
+tools/ui/Makefile
+
+# Compiled binaries output directory
+/bin/
+
 # Deprecated
 
 /main
