@@ -40,3 +40,9 @@ storybook-static
 # Vitest browser mode failure artifacts
 .vitest-attachments/
 tests/**/__screenshots__/
+
+# CMake-generated embed artifacts (in-source build litter)
+ui.cpp
+ui.h
+llama-ui-embed
+libllama-ui.a
