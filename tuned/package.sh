@@ -71,6 +71,32 @@ for b in "${BINARIES[@]}"; do
 done
 for so in "${SO_FILES[@]}"; do
     cp -p "${so}" "${STAGE}/"
+    # Also stage the bare SONAME (e.g. libggml-base.so.0): the dynamic
+    # loader resolves DT_NEEDED entries by this exact filename, not by the
+    # fully-versioned one -- confirmed via `readelf -d`/`ldd` empirically
+    # (a deploy without this symlink silently fell back to this build
+    # machine's own build/bin/ via the RUNPATH stripped below, meaning it
+    # only ever "worked" by accident on the machine it was built on).
+    so_name="$(basename "${so}")"
+    soname="$(readelf -d "${so}" 2>/dev/null | grep -oP '(?<=Library soname: \[)[^\]]+')"
+    if [[ -n "${soname}" && "${soname}" != "${so_name}" ]]; then
+        cp -p "${so}" "${STAGE}/${soname}"
+    fi
+done
+
+# Patch RUNPATH on every staged binary/lib to $ORIGIN, replacing the
+# absolute build-machine path CMake bakes in by default (confirmed via
+# `readelf -d`: RUNPATH was literally "/home/zbrad/gh/llama.cpp/build/bin"
+# -- fine for running in-place on the machine that built it, but silently
+# broken -- falls back to whatever happens to exist at that exact absolute
+# path, or nothing at all -- once deployed anywhere else, including this
+# same machine's Ollama install). $ORIGIN makes each file resolve its
+# sibling libs relative to wherever it's actually deployed.
+for f in "${STAGE}"/*; do
+    [[ -f "${f}" && ! -L "${f}" ]] || continue
+    if readelf -d "${f}" 2>/dev/null | grep -qE 'RPATH|RUNPATH'; then
+        patchelf --set-rpath '$ORIGIN' "${f}"
+    fi
 done
 
 echo ""

@@ -38,8 +38,12 @@ fi
 # --- Build identity: same derivation as cmake/build-info.cmake, so a
 #     release tag always matches `llama-cli --version`'s own output. ---
 REPODIR="$(cd "${GPU_TUNED_SELF_DIR}/.." && pwd)"
-LLAMA_TUNED_BUILD_NUMBER="$(git -C "${REPODIR}" rev-list --count HEAD 2>/dev/null || echo 0)"
-LLAMA_TUNED_BUILD_COMMIT="$(git -C "${REPODIR}" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+# Respect pre-set overrides (e.g. when re-packaging an already-built binary
+# after a tooling-only commit that didn't require a rebuild -- the git-HEAD
+# derivation below would otherwise mismatch what `llama-cli --version`
+# actually reports for that binary).
+: "${LLAMA_TUNED_BUILD_NUMBER:=$(git -C "${REPODIR}" rev-list --count HEAD 2>/dev/null || echo 0)}"
+: "${LLAMA_TUNED_BUILD_COMMIT:=$(git -C "${REPODIR}" rev-parse --short HEAD 2>/dev/null || echo unknown)}"
 export LLAMA_TUNED_BUILD_NUMBER LLAMA_TUNED_BUILD_COMMIT
 
 # --- List installed toolkits under /usr/local/cuda-<ver> (glob, sorted). ---
