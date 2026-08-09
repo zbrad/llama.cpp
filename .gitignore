@@ -1,3 +1,6 @@
+# tuned/package.sh output (built tarballs, not source)
+/dist/
+
 # Extensions
 
 *.a
