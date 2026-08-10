@@ -39,12 +39,17 @@ for b in "${BINARIES[@]}"; do
     fi
 done
 
-# Real, unversioned .so files only (not the dev symlinks -- those get
-# recreated by soname normalization on the consuming side, same as the
-# ollama deploy script already does).
-mapfile -t SO_FILES < <(find "${BIN_DIR}" -maxdepth 1 -name '*.so.*' -not -type l | sort)
+# Real .so files (both versioned like libggml-base.so.0.19.0 AND bare
+# like libllama-server-impl.so -- llama-server/llama-quantize each link a
+# same-named unversioned *-impl.so that a narrower "*.so.*"-only glob
+# misses entirely: confirmed via `ldd build/bin/llama-server`, which was
+# the actual root cause of a real "cannot open shared object file: No
+# such file or directory" failure on a deployed release before this fix).
+# Excludes dev symlinks -- those get recreated by soname normalization on
+# the consuming side, same as the ollama deploy script already does.
+mapfile -t SO_FILES < <(find "${BIN_DIR}" -maxdepth 1 \( -name '*.so.*' -o -name '*.so' \) -not -type l | sort)
 if [[ "${#SO_FILES[@]}" -eq 0 ]]; then
-    echo "ERROR: no lib*.so.* files found under ${BIN_DIR}." >&2
+    echo "ERROR: no lib*.so* files found under ${BIN_DIR}." >&2
     exit 1
 fi
 
