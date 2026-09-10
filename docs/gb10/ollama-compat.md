@@ -141,7 +141,7 @@ The `mode` string reflects the actual load path:
 | `src/CMakeLists.txt` | Adds compat sources to the `llama` library |
 | `tools/mtmd/clip.cpp` | Vision model compat hook |
 | `tools/mtmd/CMakeLists.txt` | Adds `src/` to the mtmd include path |
-| `docs/spark/nemotron-super-spark.md` | Model settings and launch flags reference |
+| `docs/gb10/nemotron-super-spark.md` | Model settings and launch flags reference |
 
 ## Deploying with Ollama
 

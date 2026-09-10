@@ -1,6 +1,6 @@
 #!/bin/bash
 # tuned/package.sh <variant> — package an already-built (per
-# docs/spark/README.md's `cmake -B build ...` command) build/bin/ output
+# docs/gb10/README.md's `cmake -B build ...` command) build/bin/ output
 # into a tarball and publish it as a real GitHub release, so downstream
 # consumers (zbrad/ollama's fetch script) can pull a published build
 # instead of reaching into a local sibling checkout.
