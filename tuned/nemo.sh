@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# ~/nemo.sh — launch a nemotron model locally via bare llama-server, in the
-# background, with all the fixes worked out this session (see the
-# -home-zbrad-gh project memory's tuned-builds-expansion-plan.md for the
-# full writeup of each):
+# ~/nemo.sh — launch a nemotron model via bare llama-server as a
+# systemd --user service (no sudo needed for start/stop/restart), with
+# all the fixes worked out this session (see the -home-zbrad-gh project
+# memory's tuned-builds-expansion-plan.md for the full writeup of each):
 #
 #   - --chat-template-file (super only): that GGUF has no embedded
 #     tokenizer.chat_template (it's the Ollama-blob-sourced copy). Without
@@ -34,12 +34,20 @@
 #   Known model names, their filenames, aliases, and chat templates come
 #   from models/aliases.json in the llama.cpp checkout -- see that file's
 #   own comment for the search-path resolution it uses.
+#
+# Process management: generates and drives a systemd --user unit
+# (nemo-<alias>.service) rather than a bare nohup'd background process --
+# matches how node-2 runs nano, and needs no sudo for restart/stop.
+# Note: --user services stop when your login session ends unless linger is
+# enabled for this account (`loginctl show-user $USER -p Linger`); this
+# script doesn't attempt to enable it (that's a separate, one-time,
+# possibly-privileged step).
 set -euo pipefail
 
 REPODIR="/home/zbrad/gh/llama.cpp"
 LLAMA_SERVER="${REPODIR}/build/bin/llama-server"
 ALIASES_FILE="${REPODIR}/models/aliases.json"
-LOG_DIR="${REPODIR}/logs"
+UNIT_DIR="${HOME}/.config/systemd/user"
 PORT="${NEMO_PORT:-8091}"
 HOST="${NEMO_HOST:-0.0.0.0}"
 CTX_SIZE="${NEMO_CTX_SIZE:-32768}"
@@ -103,29 +111,13 @@ case "$MODEL_CHOICE" in
         ;;
 esac
 
-# Tag the API-visible alias (not MODEL_LABEL -- that feeds filenames) when
-# this script isn't running on PRIMARY_HOST, so a consumer like Open WebUI
-# can tell at a glance that a model came from another machine.
+# Tag the API-visible alias (not MODEL_LABEL -- that feeds the unit/file
+# names) when this script isn't running on PRIMARY_HOST, so a consumer like
+# Open WebUI can tell at a glance that a model came from another machine.
 [[ "$(hostname)" != "$PRIMARY_HOST" ]] && MODEL_ALIAS="${MODEL_ALIAS} (remote)"
 
-PID_FILE="/home/zbrad/.nemo-${MODEL_LABEL}.pid"
-
-# running_pid — checks both the pidfile *and* (defensively) any stray
-# llama-server already serving this exact model, in case a prior instance
-# was started outside this script (bit us once already this session).
-running_pid() {
-    local pid
-    if [[ -f "$PID_FILE" ]]; then
-        pid="$(cat "$PID_FILE")"
-        if kill -0 "$pid" 2>/dev/null; then
-            echo "$pid"
-            return 0
-        fi
-    fi
-    pid="$(pgrep -f "llama-server.*${MODEL}" | head -1 || true)"
-    [[ -n "$pid" ]] && echo "$pid" && return 0
-    return 1
-}
+UNIT_NAME="nemo-${MODEL_LABEL}.service"
+UNIT_FILE="${UNIT_DIR}/${UNIT_NAME}"
 
 # check_mem — the model itself is ~86GB; refuse to start if there isn't
 # enough free+reclaimable memory to load it plus a safety margin for KV
@@ -146,23 +138,49 @@ check_mem() {
     fi
 }
 
+# write_unit — render the systemd --user unit for the resolved model and
+# (re)write it to disk. Called by do_start/do_restart so the unit always
+# reflects the current MODEL/MODEL_ALIAS/CHAT_TEMPLATE before starting.
+write_unit() {
+    local extra_args=()
+    [[ -n "$CHAT_TEMPLATE" ]] && extra_args+=(--chat-template-file "$CHAT_TEMPLATE")
+
+    mkdir -p "$UNIT_DIR"
+    cat > "$UNIT_FILE" <<EOF
+[Unit]
+Description=nemo.sh - ${MODEL_ALIAS} (llama-server)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=$(dirname "$LLAMA_SERVER")
+ExecStart=${LLAMA_SERVER} --model ${MODEL} --alias "${MODEL_ALIAS}" ${extra_args[@]} --ctx-size ${CTX_SIZE} --n-gpu-layers 99 --load-mode none --threads 8 --temp 1.0 --top-p 0.95 --min-p 0.01 --reasoning-preserve --host ${HOST} --port ${PORT}
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
+EOF
+    systemctl --user daemon-reload
+}
+
 do_status() {
-    local pid
-    if pid="$(running_pid)"; then
-        echo "running: ${MODEL_LABEL}, pid $pid, port ${PORT}"
+    if systemctl --user is-active --quiet "$UNIT_NAME"; then
+        echo "running: ${MODEL_LABEL}, unit ${UNIT_NAME}, port ${PORT}"
         curl -s -m 3 "http://127.0.0.1:${PORT}/health" 2>&1 || echo "(health check failed -- still loading, or unreachable)"
     else
         echo "not running: ${MODEL_LABEL}"
+        systemctl --user is-failed --quiet "$UNIT_NAME" 2>/dev/null && \
+            echo "(unit ${UNIT_NAME} last exited with a failure -- see 'journalctl --user -u ${UNIT_NAME}')"
     fi
 }
 
 do_stop() {
-    local pid
-    if pid="$(running_pid)"; then
-        echo "stopping pid $pid..."
-        kill "$pid"
-        until ! kill -0 "$pid" 2>/dev/null; do sleep 1; done
-        rm -f "$PID_FILE"
+    if systemctl --user is-active --quiet "$UNIT_NAME"; then
+        echo "stopping ${UNIT_NAME}..."
+        systemctl --user stop "$UNIT_NAME"
         echo "stopped"
     else
         echo "not running"
@@ -170,40 +188,19 @@ do_stop() {
 }
 
 do_start() {
-    local existing
-    if existing="$(running_pid)"; then
-        die "already running (${MODEL_LABEL}, pid $existing) -- use '$0 --model $MODEL_CHOICE restart' or 'stop' first"
+    if systemctl --user is-active --quiet "$UNIT_NAME"; then
+        die "already running (${MODEL_LABEL}, unit ${UNIT_NAME}) -- use '$0 --model $MODEL_CHOICE restart' or 'stop' first"
     fi
     [[ -x "$LLAMA_SERVER" ]] || die "llama-server not found/executable at $LLAMA_SERVER"
     [[ -f "$MODEL" ]] || die "model not found at $MODEL"
     [[ -z "$CHAT_TEMPLATE" || -f "$CHAT_TEMPLATE" ]] || die "chat template not found at $CHAT_TEMPLATE"
     check_mem
 
-    mkdir -p "$LOG_DIR"
-    local log="${LOG_DIR}/${MODEL_LABEL}-$(date +%Y%m%d-%H%M%S).log"
+    write_unit
+    systemctl --user start "$UNIT_NAME"
 
-    local extra_args=()
-    [[ -n "$CHAT_TEMPLATE" ]] && extra_args+=(--chat-template-file "$CHAT_TEMPLATE")
-
-    cd "$(dirname "$LLAMA_SERVER")"
-    nohup ./llama-server \
-        --model "$MODEL" \
-        --alias "$MODEL_ALIAS" \
-        "${extra_args[@]}" \
-        --ctx-size "$CTX_SIZE" \
-        --n-gpu-layers 99 \
-        --load-mode none \
-        --threads 8 \
-        --temp 1.0 --top-p 0.95 --min-p 0.01 \
-        --reasoning-preserve \
-        --host "$HOST" --port "$PORT" \
-        > "$log" 2>&1 &
-    local pid=$!
-    disown
-    echo "$pid" > "$PID_FILE"
-
-    echo "started: ${MODEL_LABEL}, pid $pid, port ${PORT}"
-    echo "log: $log"
+    echo "started: ${MODEL_LABEL}, unit ${UNIT_NAME}, port ${PORT}"
+    echo "logs: journalctl --user -u ${UNIT_NAME} -f"
     echo "(large models take a while to load -- check with '$0 --model $MODEL_CHOICE status')"
 }
 
