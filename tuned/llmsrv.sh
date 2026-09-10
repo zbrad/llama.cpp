@@ -58,7 +58,8 @@
 #   trained context if that's smaller), LLMSRV_MEM_MARGIN_GIB,
 #   LLMSRV_PRIMARY_HOST, LLMSRV_PORT, LLMSRV_START_TIMEOUT_SEC (how long to
 #   wait for /health before giving up), LLMSRV_CRITICAL_MEM_GIB (abort
-#   threshold for MemAvailable during startup).
+#   threshold for MemAvailable during startup), LLMSRV_SLOT_SAVE_DIR
+#   (per-model subdir for /slots save/restore/erase -- see below).
 #
 # Process management: generates and drives a systemd --user unit
 # (llmsrv-<alias>.service) rather than a bare nohup'd background process --
@@ -101,6 +102,7 @@ ALIASES_FILE="${DATA_DIR}/models/aliases.json"
 UNIT_DIR="${HOME}/.config/systemd/user"
 HOST="${LLMSRV_HOST:-0.0.0.0}"
 CTX_SIZE="${LLMSRV_CTX_SIZE:-262144}"
+SLOT_SAVE_DIR="${LLMSRV_SLOT_SAVE_DIR:-${HOME}/models/llmsrv-slots}"  # per-model subdir for /slots save/restore
 MEM_MARGIN_GIB="${LLMSRV_MEM_MARGIN_GIB:-8}"  # runtime overhead beyond weights+KV (activations, CUDA context, output buffers) -- KV cache itself is now sized explicitly in check_mem, not folded into this margin
 PRIMARY_HOST="${LLMSRV_PRIMARY_HOST:-$(hostname)}"  # host consumers (e.g. Open WebUI) run on; anywhere else is "remote". Default assumes this host is primary (never tags remote) -- a real multi-host deployment sets LLMSRV_PRIMARY_HOST locally per node, not committed here
 START_TIMEOUT_SEC="${LLMSRV_START_TIMEOUT_SEC:-300}"  # max time to wait for /health before stopping the unit and giving up
@@ -269,6 +271,14 @@ WARN
     CACHE_TYPE_V="f16"
     EXTRA_LLAMA_ARGS=()
     [[ -n "$CHAT_TEMPLATE" ]] && EXTRA_LLAMA_ARGS+=(--chat-template-file "$CHAT_TEMPLATE")
+
+    # /slots save/restore (chat/session export to local storage): per-model
+    # subdir so alias-named models never collide. Enables the
+    # /slots/{id}?action=save/restore/erase endpoints, which otherwise
+    # refuse with 501 ("This server does not support slots action").
+    local slot_save_path="${SLOT_SAVE_DIR}/${MODEL_LABEL}"
+    mkdir -p "$slot_save_path"
+    EXTRA_LLAMA_ARGS+=(--slot-save-path "$slot_save_path")
     if [[ "$MODEL_CHOICE" == "super" ]]; then
         CACHE_TYPE_K="q8_0"
         CACHE_TYPE_V="q5_0"

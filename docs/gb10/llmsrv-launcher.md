@@ -30,6 +30,7 @@ also works, for a model not in the table.
 | `LLMSRV_PORT` | override the alias table's per-model default port | (from `aliases.json`) |
 | `LLMSRV_START_TIMEOUT_SEC` | how long to wait for `/health` before giving up | `300` |
 | `LLMSRV_CRITICAL_MEM_GIB` | `MemAvailable` abort floor during startup | `2` |
+| `LLMSRV_SLOT_SAVE_DIR` | per-model subdir for `/slots` save/restore/erase | `~/models/llmsrv-slots` |
 
 ## Getting llmsrv.sh + a matching binary
 
