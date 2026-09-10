@@ -12,6 +12,19 @@ architecture.
 - **Memory**: Unified address space (iGPU, ~120 GiB total)
 - **Compute**: ~14 tok/s inference for nemotron-3-super at Q4_K_XL
 
+## Quick Start: Install a Published Build
+
+If you don't need to build from source, `install.sh` fetches a matching
+published GPU release (checksum-verified), the model alias table, and
+[llmsrv.sh](llmsrv-launcher.md) -- no git checkout required:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/zbrad/llama.cpp/tuned-builds/install.sh | bash
+```
+
+See [llmsrv-launcher.md](llmsrv-launcher.md#getting-llmsrvsh--a-matching-binary)
+for install locations other than the default, and env-var overrides.
+
 ## Building for Spark
 
 ```bash
@@ -205,6 +218,7 @@ This copies the build to `/usr/local/lib/ollama/local_llama_cpp/` and symlinks
 - [nemotron-super-spark.md](nemotron-super-spark.md) — Model-specific launch flags and quantization options
 - [nemotron-nano-gb10.md](nemotron-nano-gb10.md) - Nano sibling: launch flags, sampling, systemd example
 - [llmsrv-launcher.md](llmsrv-launcher.md) — `tuned/llmsrv.sh`, the multi-model systemd `--user` service launcher used to actually run these models day to day
+- [install.sh](../../install.sh) — one-shot setup script: fetches a published release + llmsrv.sh + the model alias table, no checkout needed
 - [local-llama-cpp.md](../../ollama/docs/local-llama-cpp.md) (Ollama repo) — When and how to use a local llama.cpp build with Ollama
 - NVIDIA DGX Spark guide: https://build.nvidia.com/spark/llama-cpp/overview
 - Nemotron-3-Super model card: https://build.nvidia.com/nvidia/nemotron-3-super-120b-a12b/modelcard

@@ -22,6 +22,7 @@ also works, for a model not in the table.
 
 | Variable | Meaning | Default |
 |---|---|---|
+| `LLMSRV_HOME` | explicit install dir, for an `install.sh --dir` target other than the default (see below) | (unset -- falls back to checkout/default-location detection) |
 | `LLMSRV_HOST` | bind address | `0.0.0.0` |
 | `LLMSRV_CTX_SIZE` | context-size ceiling (still capped to the model's own trained context if that's smaller — see below) | `262144` |
 | `LLMSRV_MEM_MARGIN_GIB` | runtime overhead margin beyond weights+KV | `8` |
@@ -29,6 +30,34 @@ also works, for a model not in the table.
 | `LLMSRV_PORT` | override the alias table's per-model default port | (from `aliases.json`) |
 | `LLMSRV_START_TIMEOUT_SEC` | how long to wait for `/health` before giving up | `300` |
 | `LLMSRV_CRITICAL_MEM_GIB` | `MemAvailable` abort floor during startup | `2` |
+
+## Getting llmsrv.sh + a matching binary
+
+On a full checkout (node-1/node-2 today), `llmsrv.sh` finds everything
+relative to the repo itself -- nothing else needed.
+
+On a machine with no checkout at all, `install.sh` (repo root) fetches a
+matching zbrad/llama.cpp GPU release (checksum-verified against a published
+`.sha256` sidecar), `models/aliases.json`, the chat templates it
+references, and `llmsrv.sh` itself, into one directory:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/zbrad/llama.cpp/tuned-builds/install.sh | bash
+```
+
+Default install location is `$XDG_DATA_HOME/llmsrv` (usually
+`~/.local/share/llmsrv`), symlinked onto `~/.local/bin` -- `llmsrv.sh` then
+works with no extra setup, same as a checkout. Pass `--dir <path>` for
+anywhere else (including the current folder); in that case, tell
+`llmsrv.sh` where to look via `LLMSRV_HOME=<path>` (the script prints the
+exact command to use at the end).
+
+`install.sh` itself is pinned by default to a `tuning-vN` tag rather than
+floating on the `tuned-builds` branch tip, so it doesn't drift for reasons
+unrelated to the installer (an upstream sync, an unrelated tuning commit,
+etc.) -- see its own header comment for the full set of overrides
+(`REPO_REF` to pin an exact tag/commit, `LLAMA_CPP_TAG` to pin an exact GPU
+release instead of auto-detecting).
 
 ## Process management
 
@@ -125,3 +154,5 @@ GB10's characteristic `N/A`.
 - [nemotron-super-spark.md](nemotron-super-spark.md),
   [nemotron-nano-gb10.md](nemotron-nano-gb10.md) — per-model launch flags
   and quantization notes for two of the models this script serves
+- [install.sh](../../install.sh) — the release-only setup script described
+  above
