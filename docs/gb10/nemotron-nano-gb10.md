@@ -35,6 +35,7 @@ llama-server \
   --port 8080 \
   --ctx-size 32768 \
   --n-gpu-layers 99 \
+  --load-mode none \
   --jinja \
   --temp 1.0 --top-p 0.95 --min-p 0.01 \
   --reasoning-format deepseek \
@@ -45,11 +46,32 @@ llama-server \
 
 Flag notes:
 
+- `--load-mode none` skips mmap and reads the model straight off disk into
+  pinned staging buffers instead. On GB10's unified-memory architecture,
+  the default (`--load-mode auto`, which mmaps) does a synchronous
+  `cudaMemcpyAsync` per tensor off cold mmap pages - only ~259 MB/s. The
+  direct-read path hits ~1131 MB/s, a 4.4x faster load (see
+  [README.md](README.md#load-time-performance-313s--72s) for the full
+  root-cause writeup). This replaces the older `--no-mmap`/`--mmap` flags,
+  which are now deprecated in favor of `--load-mode`. Verified 2026-08-19
+  on a live node-2 deployment (user-mode systemd service, this same
+  ~38 GiB Nano GGUF): restart-to-ready dropped to ~6s.
 - `--reasoning-format deepseek` splits `<think>...</think>` content into
   `message.reasoning_content` in the API response instead of leaving it
   inline in `content`. The chat template advertises
   `supports_preserve_reasoning`; llama-server's own startup log flags this
-  with a NOTICE if the format is left at its default (`none`).
+  with a NOTICE if `--reasoning-preserve` isn't also set. Note: as of the
+  current build, llama-server's own default for `--reasoning-format`
+  changed from `none` to `auto` (auto-detects from the template), so a
+  bare invocation without this flag now gets reasoning-content splitting
+  automatically too - setting `deepseek` explicitly here is still correct
+  and makes the behavior explicit/pinned rather than relying on
+  auto-detection, but it's no longer strictly required to avoid the old
+  "silently returns everything in content" failure mode. There's also a
+  separate `-rea/--reasoning [on|off|auto]` flag (default `auto`) that
+  controls whether thinking happens at all, independent of how it's
+  formatted in the response - not needed here since Nano's template
+  enables thinking by default.
 - `--reasoning-preserve` keeps the full reasoning trace across turns
   instead of truncating past turns down to only their final answer
   (the template's default `truncate_history_thinking` behavior). Without

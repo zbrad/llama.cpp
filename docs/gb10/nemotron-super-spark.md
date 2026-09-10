@@ -26,11 +26,24 @@ llama-server \
   --ctx-size 262144 \        # safe single-GPU limit (up to 1M with enough VRAM)
   --n-gpu-layers 99 \        # offload all layers to GPU
   --threads 8 \
-  --temp 0.6 --top-p 0.95 \ # reasoning ON
+  --temp 1.0 --top-p 0.95 \ # chat/reasoning
   # --temp 0 \               # reasoning OFF (greedy decoding)
   --min-p 0.01 \
   --special --verbose-prompt # shows <think> reasoning tokens
 ```
+
+**Sampling correction (2026-08-19):** this previously listed `--temp 0.6` as
+"reasoning ON," sourced from Unsloth's guide. That guide actually gives
+`temp=0.6/top_p=0.95` for **tool-calling** specifically, and
+`temp=1.0/top_p=1.0` for general chat/instruction (reasoning) - the 0.6
+value was mislabeled here. NVIDIA's own NIM reference doc
+(docs.api.nvidia.com/nim/reference/nvidia-nemotron-3-super-120b-a12b)
+states explicitly: "Use temperature=1.0 and top_p=0.95 across all tasks
+and serving backends - reasoning, tool calling, and general chat alike."
+`temp=1.0/top_p=0.95` above reflects that unified NVIDIA recommendation;
+`min_p=0.01` remains as recommended for llama.cpp specifically. If you
+need the tool-calling-specific config, that's `temp=0.6/top_p=0.95` per
+Unsloth's guide (untested here).
 
 ## Build llama.cpp for DGX Spark (GB10 GPU)
 

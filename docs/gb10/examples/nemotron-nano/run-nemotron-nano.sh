@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Example launch script for Nemotron-3-Nano-30B-A3B via llama-server on a
-# DGX Spark (GB10) box. See ../../nemotron-nano-spark.md for flag rationale.
+# DGX Spark (GB10) box. See ../../nemotron-nano-gb10.md for flag rationale.
 #
 # Adjust BIN/MODEL for your own layout. Model choice: Nano (~38 GiB) instead
 # of Super (~65-81 GiB, see ../../nemotron-super-spark.md) leaves headroom
@@ -25,19 +25,31 @@ NGL="${LLAMA_NGL:-all}"
 SLOT_CACHE_DIR="${LLAMA_SLOT_CACHE_DIR:-./slot-cache}"
 mkdir -p "$SLOT_CACHE_DIR"
 
+# --load-mode none: GB10's default load path (mmap) does a synchronous
+# cudaMemcpyAsync per tensor off cold mmap pages (~259 MB/s); reading
+# straight off disk into pinned staging buffers instead hits ~1131 MB/s,
+# a 4.4x faster load. Replaces the older, now-deprecated --no-mmap/--mmap
+# flags. See ../../nemotron-nano-gb10.md and ../../README.md for the full
+# root-cause writeup.
+LOAD_MODE="${LLAMA_LOAD_MODE:-none}"
+
 # Sampling and reasoning-format per NVIDIA's Nemotron-3 docs (build.nvidia.com
 # NIM reference) and Unsloth's llama.cpp guide for this GGUF: temp=1.0/top_p=0.95
 # for all of chat/reasoning/tool-calling, min_p=0.01 for llama.cpp specifically.
 # --reasoning-format deepseek splits <think>...</think> into message.reasoning_content
 # instead of leaving it inline in content (this template advertises
 # supports_preserve_reasoning; llama-server's own startup NOTICE flags this gap
-# if left unset, along with a separate NOTICE for --reasoning-preserve).
+# if left unset, along with a separate NOTICE for --reasoning-preserve). Current
+# builds default --reasoning-format to auto rather than none, so this is no
+# longer strictly required to get the split, but is kept explicit here to pin
+# the behavior rather than rely on auto-detection.
 exec "$BIN" \
   -m "$MODEL" \
   --host "$HOST" \
   --port "$PORT" \
   -ngl "$NGL" \
   -c "$CTX_SIZE" \
+  --load-mode "$LOAD_MODE" \
   --jinja \
   --temp 1.0 \
   --top-p 0.95 \
