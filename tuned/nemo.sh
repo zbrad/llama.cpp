@@ -50,9 +50,9 @@ ALIASES_FILE="${REPODIR}/models/aliases.json"
 UNIT_DIR="${HOME}/.config/systemd/user"
 PORT="${NEMO_PORT:-8091}"
 HOST="${NEMO_HOST:-0.0.0.0}"
-CTX_SIZE="${NEMO_CTX_SIZE:-32768}"
+CTX_SIZE="${NEMO_CTX_SIZE:-262144}"
 MEM_MARGIN_GIB="${NEMO_MEM_MARGIN_GIB:-8}"  # headroom above model size for KV cache + overhead
-PRIMARY_HOST="${NEMO_PRIMARY_HOST:-node-1}"  # host consumers (e.g. Open WebUI) run on; anywhere else is "remote"
+PRIMARY_HOST="${NEMO_PRIMARY_HOST:-node-2}"  # host consumers (e.g. Open WebUI) run on; anywhere else is "remote"
 
 die() { echo "error: $*" >&2; exit 1; }
 
@@ -122,20 +122,43 @@ UNIT_FILE="${UNIT_DIR}/${UNIT_NAME}"
 # check_mem — the model itself is ~86GB; refuse to start if there isn't
 # enough free+reclaimable memory to load it plus a safety margin for KV
 # cache/runtime overhead, rather than letting it OOM (or silently swap)
-# partway through a multi-minute load.
+# partway through a multi-minute load. MemAvailable already folds in
+# reclaimable page cache, so a low reading here isn't stale cache -- on
+# this GB10 box it's usually another nemo unit's model still resident, or
+# its GPU/UVM pool, which the driver doesn't hand back to the OS the
+# instant the process exits.
 check_mem() {
     [[ -f "$MODEL" ]] || return 0  # model-missing case is reported separately
 
-    local model_bytes model_gib avail_kib avail_gib required_gib
+    local model_bytes model_gib avail_kib avail_gib required_gib other_units hint
+
     model_bytes="$(stat -c %s "$MODEL")"
     model_gib=$(( model_bytes / 1024 / 1024 / 1024 ))
-    avail_kib="$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)"
-    avail_gib=$(( avail_kib / 1024 / 1024 ))
     required_gib=$(( model_gib + MEM_MARGIN_GIB ))
 
-    if (( avail_gib < required_gib )); then
-        die "not enough available memory: need ~${required_gib}GiB (model ${model_gib}GiB + ${MEM_MARGIN_GIB}GiB margin), only ${avail_gib}GiB available (see 'free -h'). Free up memory or stop other processes first."
-    fi
+    avail_kib="$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)"
+    avail_gib=$(( avail_kib / 1024 / 1024 ))
+    (( avail_gib >= required_gib )) && return 0
+
+    # Near miss: sync and try an opportunistic drop_caches before giving up.
+    # This can't dig out anything MemAvailable didn't already count as
+    # reclaimable, but the estimate rounds conservatively, so a real reclaim
+    # sometimes recovers a few hundred MB right at the edge. sudo -n fails
+    # fast (no prompt) if passwordless sudo isn't set up -- fine either way,
+    # this stays optional and start/stop/restart still need no sudo.
+    sync
+    sudo -n sh -c 'echo 1 > /proc/sys/vm/drop_caches' 2>/dev/null || true
+    avail_kib="$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)"
+    avail_gib=$(( avail_kib / 1024 / 1024 ))
+    (( avail_gib >= required_gib )) && return 0
+
+    other_units="$(systemctl --user list-units --type=service --state=running --no-legend --plain 'nemo-*.service' 2>/dev/null \
+        | awk -v skip="$UNIT_NAME" '$1 != skip {print $1}')"
+
+    hint="Free up memory or stop other processes first."
+    [[ -n "$other_units" ]] && hint="Stop the other running nemo unit(s) first: ${other_units//$'\n'/, }"
+
+    die "not enough available memory: need ~${required_gib}GiB (model ${model_gib}GiB + ${MEM_MARGIN_GIB}GiB margin), only ${avail_gib}GiB available (see 'free -h'). ${hint}"
 }
 
 # write_unit — render the systemd --user unit for the resolved model and
@@ -144,6 +167,16 @@ check_mem() {
 write_unit() {
     local extra_args=()
     [[ -n "$CHAT_TEMPLATE" ]] && extra_args+=(--chat-template-file "$CHAT_TEMPLATE")
+    # super-only: long-context agent-loop settings (context-shift so a run
+    # doesn't hard-reset on hitting the ctx limit; flash-attn + quantized
+    # KV cache to keep long-context VRAM/RAM in check). --n-gpu-layers 99
+    # below already offloads every layer (super has far fewer than 99), so
+    # no separate "999"/"all" override is needed. --no-mmap is intentionally
+    # NOT added: this build's own --help marks it deprecated in favor of
+    # --load-mode none, already set below (see script header comment).
+    if [[ "$MODEL_CHOICE" == "super" ]]; then
+        extra_args+=(--context-shift --flash-attn on --cache-type-k q8_0 --cache-type-v q5_0)
+    fi
 
     mkdir -p "$UNIT_DIR"
     cat > "$UNIT_FILE" <<EOF
