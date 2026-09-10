@@ -148,6 +148,55 @@ gpu_tuned_verify_cuda_compat() {
     echo "OK: ${so_file} CUDA runtime compat confirmed (${needed}, matches expected major ${expected_major})"
 }
 
+# gpu_tuned_verify_cccl_version <cccl-src-dir> <min-version> — confirms the
+# CCCL version CPM fetched into <cccl-src-dir> (read from its
+# cccl-version.json, e.g. {"major":3,"minor":5,"patch":0}) is >=
+# <min-version> ("major.minor.patch"). Warns (does not fail) rather than
+# erroring if cccl-version.json isn't found, since not every CCCL-consuming
+# repo necessarily vendors it via CPM the same way -- this is a targeted
+# regression guard, not a hard CCCL dependency check.
+#
+# Why this exists: raft hit a real memory-corruption bug on Blackwell/
+# SM_12x (thrust::exclusive_scan silently writing OOB when its input and
+# output iterators have mismatched types) that turned out to already be
+# fixed upstream in CCCL -- backported to branch/3.4.x and first released
+# in CCCL v3.4.0. A raft-side fix was opened (NVIDIA/raft#3141) then
+# closed once that was verified empirically (reverted the fix, reran
+# clean under compute-sanitizer + the full regression suite against
+# current CCCL). Without this check, silently pinning an older CCCL
+# (e.g. rolling back a rapids-cmake pin) would reintroduce that exact bug
+# with no build-time signal.
+gpu_tuned_verify_cccl_version() {
+    local cccl_src_dir="$1" min_version="$2"
+    local version_file="${cccl_src_dir}/cccl-version.json"
+    if [[ ! -f "${version_file}" ]]; then
+        echo "WARNING: gpu_tuned_verify_cccl_version: no cccl-version.json found at ${version_file} -- skipping CCCL version check." >&2
+        return 0
+    fi
+    local found_major found_minor found_patch
+    found_major="$(grep -oE '"major"[[:space:]]*:[[:space:]]*[0-9]+' "${version_file}" | grep -oE '[0-9]+$')"
+    found_minor="$(grep -oE '"minor"[[:space:]]*:[[:space:]]*[0-9]+' "${version_file}" | grep -oE '[0-9]+$')"
+    found_patch="$(grep -oE '"patch"[[:space:]]*:[[:space:]]*[0-9]+' "${version_file}" | grep -oE '[0-9]+$')"
+    if [[ -z "${found_major}" || -z "${found_minor}" || -z "${found_patch}" ]]; then
+        echo "WARNING: gpu_tuned_verify_cccl_version: could not parse major/minor/patch from ${version_file} -- skipping CCCL version check." >&2
+        return 0
+    fi
+    local min_major min_minor min_patch
+    IFS='.' read -r min_major min_minor min_patch <<< "${min_version}"
+    local found_tuple min_tuple
+    found_tuple="$(printf '%05d%05d%05d' "${found_major}" "${found_minor}" "${found_patch}")"
+    min_tuple="$(printf '%05d%05d%05d' "${min_major:-0}" "${min_minor:-0}" "${min_patch:-0}")"
+    if [[ "${found_tuple}" < "${min_tuple}" ]]; then
+        echo "ERROR: CCCL ${found_major}.${found_minor}.${found_patch} (from ${version_file}) is older than the required minimum ${min_version}." >&2
+        echo "       CCCL < 3.4.0 lacks the warpspeed-scan fixes (NVIDIA/cccl#9207, #9781) needed to avoid a real" >&2
+        echo "       memory-corruption bug on Blackwell/SM_12x (thrust::exclusive_scan with mismatched" >&2
+        echo "       input/output types) -- see NVIDIA/raft#3141 (closed, not needed) for the empirical verification" >&2
+        echo "       this minimum is based on." >&2
+        return 1
+    fi
+    echo "OK: CCCL ${found_major}.${found_minor}.${found_patch} meets the minimum required version (${min_version})"
+}
+
 # gpu_tuned_embed_build_info <so-or-bin-path> <variant> <package> <version>
 # [hw-label] [repo-url] [section-name] — embeds a greppable build-info
 # string into a custom ELF section on the given file, readable later via
@@ -235,4 +284,84 @@ constraint = ${constraints_file}
 EOF
 
     echo "OK: pinned torch==${torch_version} for ${venv_dir} (constraint: ${constraints_file})"
+}
+
+# gpu_tuned_short_ver <version-string> — reduces a "x.y.z..." version (any
+# number of trailing dot-separated components -- patch, build metadata,
+# etc.) to "x.y", stripping leading zeros from x/y (e.g. "26.10.00" ->
+# "26.10", "01.02.3" -> "1.2"). Errors rather than silently echoing the
+# unmodified input if <version-string> doesn't have at least an "x.y."
+# prefix to reduce. Consolidates a regex independently duplicated 5 times
+# across raft's and faiss's own package.sh/release.sh/wheel.sh.
+gpu_tuned_short_ver() {
+    local version="$1" short
+    short="$(printf '%s' "${version}" | sed -E 's/^0*([0-9]+)\.0*([0-9]+)\..*/\1.\2/')"
+    if [[ ! "${short}" =~ ^[0-9]+\.[0-9]+$ ]]; then
+        echo "ERROR: gpu_tuned_short_ver: could not reduce '${version}' to an 'x.y' short version (expected at least 'x.y.<something>')." >&2
+        return 1
+    fi
+    echo "${short}"
+}
+
+# gpu_tuned_wheel_version <wheel-path> <pkg-name-prefix> — extracts the
+# full version string from a built wheel's filename: the segment between
+# "<pkg-name-prefix>-" and the next "-", e.g.
+# "flash_attn-2.7.2.post1+cu133-cp312-cp312-linux_aarch64.whl" with prefix
+# "flash_attn" -> "2.7.2.post1+cu133". <pkg-name-prefix> is inlined into a
+# sed pattern as-is (no regex-escaping) -- fine for the plain
+# alnum/underscore package names used across this fleet, not a general-
+# purpose escape-anything helper. Callers strip any "+local" segment
+# themselves (${VERSION%%+*} -- trivial bash, not worth a function) when
+# they need a release-tag-safe base version instead of the full one.
+# Consolidates a regex independently duplicated 3 times across
+# flash-attention's, flash-attention-vllm's, and vllm's own wheel.sh/
+# release.sh.
+gpu_tuned_wheel_version() {
+    local wheel_path="$1" pkg_prefix="$2" wheel_basename version
+    wheel_basename="$(basename "${wheel_path}")"
+    version="$(printf '%s' "${wheel_basename}" | sed -E "s/^${pkg_prefix}-([^-]+)-.*/\\1/")"
+    if [[ "${version}" == "${wheel_basename}" ]]; then
+        echo "ERROR: gpu_tuned_wheel_version: could not extract a version from '${wheel_basename}' (expected it to start with '${pkg_prefix}-')." >&2
+        return 1
+    fi
+    echo "${version}"
+}
+
+# gpu_tuned_publish_release <owner/repo> <tag> <title> <notes-or-@notes-file>
+# [asset-spec ...] — publish a GitHub release via `gh release create`,
+# always targeting the "tuned-builds" branch (every consumer in this fleet
+# always does; call `gh release create` directly for the rare exception).
+# <notes-or-@notes-file>: pass literal notes text, or "@<path>"
+# (curl-style) to use --notes-file <path> instead -- covers raft's own
+# release.sh/wheel.sh/raft_wheel_librmm_shared.sh, which choose between a
+# generated notes file and an inline fallback string. Each <asset-spec> is
+# passed through as-is to `gh release create` (its own "<path>#<label>"
+# attachment syntax) -- pass as many as needed, including via an expanded
+# array (`"${ASSETS[@]}"`). Requires at least one asset: a release with
+# nothing attached is always a caller mistake in this fleet (forgot to
+# build/package first), not a legitimate case.
+#
+# Consolidates a call independently hand-written 12 times across 10 repos
+# (raft alone 3x) -- see
+# ~/.claude/design/tuned-common-consolidation-candidates.md finding #1.
+gpu_tuned_publish_release() {
+    local repo="$1" tag="$2" title="$3" notes="$4"
+    shift 4
+    if [[ $# -eq 0 ]]; then
+        echo "ERROR: gpu_tuned_publish_release: no assets given (at least one is required)." >&2
+        return 1
+    fi
+    local notes_args=(--notes "${notes}")
+    if [[ "${notes}" == @* ]]; then
+        notes_args=(--notes-file "${notes#@}")
+    fi
+    if ! gh release create "${tag}" \
+        --repo "${repo}" \
+        --title "${title}" \
+        --target "tuned-builds" \
+        "${notes_args[@]}" \
+        "$@"; then
+        return 1
+    fi
+    echo "OK: published ${repo}@${tag} -- https://github.com/${repo}/releases/tag/${tag}"
 }

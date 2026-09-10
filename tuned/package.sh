@@ -174,11 +174,8 @@ RELEASE_TITLE="llama.cpp ${LLAMA_TUNED_BUILD_NUMBER} (${LLAMA_TUNED_BUILD_COMMIT
 
 echo ""
 echo "Publishing to GitHub release ${RELEASE_TAG}..."
-gh release create "${RELEASE_TAG}" \
-    --repo zbrad/llama.cpp \
-    --title "${RELEASE_TITLE}" \
-    --target "tuned-builds" \
-    --notes "llama-server + llama-quantize + $(( ${#SO_FILES[@]} )) shared libraries, single-arch (sm_${GPU_TUNED_CUDA_ARCH}), built against CUDA ${CUDA_VER}. Includes the Ollama-format GGUF compatibility shim. Deploy into an Ollama installation via zbrad/ollama's tuned-builds fetch script, or manually: extract and copy llama-server + libs to your Ollama lib directory, symlinking llama-server into place (see zbrad/ollama's docs/local-llama-cpp.md)." \
+gpu_tuned_publish_release "zbrad/llama.cpp" "${RELEASE_TAG}" "${RELEASE_TITLE}" \
+    "llama-server + llama-quantize + $(( ${#SO_FILES[@]} )) shared libraries, single-arch (sm_${GPU_TUNED_CUDA_ARCH}), built against CUDA ${CUDA_VER}. Includes the Ollama-format GGUF compatibility shim. Deploy into an Ollama installation via zbrad/ollama's tuned-builds fetch script, or manually: extract and copy llama-server + libs to your Ollama lib directory, symlinking llama-server into place (see zbrad/ollama's docs/local-llama-cpp.md)." \
     "${TARBALL}#$(basename "${TARBALL}")"
 
 echo ""
