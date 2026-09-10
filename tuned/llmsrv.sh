@@ -102,7 +102,7 @@ UNIT_DIR="${HOME}/.config/systemd/user"
 HOST="${LLMSRV_HOST:-0.0.0.0}"
 CTX_SIZE="${LLMSRV_CTX_SIZE:-262144}"
 MEM_MARGIN_GIB="${LLMSRV_MEM_MARGIN_GIB:-8}"  # runtime overhead beyond weights+KV (activations, CUDA context, output buffers) -- KV cache itself is now sized explicitly in check_mem, not folded into this margin
-PRIMARY_HOST="${LLMSRV_PRIMARY_HOST:-node-2}"  # host consumers (e.g. Open WebUI) run on; anywhere else is "remote"
+PRIMARY_HOST="${LLMSRV_PRIMARY_HOST:-$(hostname)}"  # host consumers (e.g. Open WebUI) run on; anywhere else is "remote". Default assumes this host is primary (never tags remote) -- a real multi-host deployment sets LLMSRV_PRIMARY_HOST locally per node, not committed here
 START_TIMEOUT_SEC="${LLMSRV_START_TIMEOUT_SEC:-300}"  # max time to wait for /health before stopping the unit and giving up
 CRITICAL_MEM_GIB="${LLMSRV_CRITICAL_MEM_GIB:-2}"  # MemAvailable floor during startup; cross it and we stop the unit rather than let the driver wedge
 
