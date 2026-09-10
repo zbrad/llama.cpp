@@ -39,6 +39,23 @@ for b in "${BINARIES[@]}"; do
     fi
 done
 
+# Incremental builds never delete old versioned libs when CMake bumps a
+# SONAME (e.g. libggml-cuda.so.0.19.0 lingering after a rebuild produces
+# .0.23.0) -- the glob below would otherwise stage every stale generation
+# alongside the current one, bloating the tarball. Drop anything that
+# isn't the active bare-symlink's target before staging.
+for link in "${BIN_DIR}"/*.so; do
+    [[ -L "${link}" ]] || continue
+    base="$(basename "${link}" .so)"
+    active="$(basename "$(readlink -f "${link}")")"
+    for f in "${BIN_DIR}/${base}".so.*; do
+        [[ -f "${f}" && ! -L "${f}" ]] || continue  # skip missing + intermediate SONAME symlinks (e.g. libfoo.so.0), only real versioned files are candidates
+        [[ "$(basename "${f}")" == "${active}" ]] && continue
+        echo "  removing stale build artifact: $(basename "${f}")"
+        rm -f "${f}"
+    done
+done
+
 # Real .so files (both versioned like libggml-base.so.0.19.0 AND bare
 # like libllama-server-impl.so -- llama-server/llama-quantize each link a
 # same-named unversioned *-impl.so that a narrower "*.so.*"-only glob
@@ -169,14 +186,22 @@ echo "Packaging $(basename "${STAGE}")'s $(ls "${STAGE}" | wc -l) files -> ${TAR
 tar -C "${STAGE}" -czf "${TARBALL}" .
 echo "Tarball: $(basename "${TARBALL}") ($(du -sh "${TARBALL}" | awk '{print $1}'))"
 
+# sha256sum-format sidecar (hex digest + filename) -- lets install.sh (and
+# anyone else) verify the download before extracting anything, same
+# convention goreleaser-style checksums.txt files use.
+SHA_FILE="${TARBALL}.sha256"
+(cd "${DIST_DIR}" && sha256sum "$(basename "${TARBALL}")" > "$(basename "${SHA_FILE}")")
+echo "Checksum: $(basename "${SHA_FILE}") ($(cut -d' ' -f1 "${SHA_FILE}"))"
+
 RELEASE_TAG="v${LLAMA_TUNED_BUILD_NUMBER}-${GPU_TUNED_VARIANT}-${CUDA_TAG}"
 RELEASE_TITLE="llama.cpp ${LLAMA_TUNED_BUILD_NUMBER} (${LLAMA_TUNED_BUILD_COMMIT}) — ${GPU_TUNED_HW_LABEL} (${CUDA_TAG})"
 
 echo ""
 echo "Publishing to GitHub release ${RELEASE_TAG}..."
 gpu_tuned_publish_release "zbrad/llama.cpp" "${RELEASE_TAG}" "${RELEASE_TITLE}" \
-    "llama-server + llama-quantize + $(( ${#SO_FILES[@]} )) shared libraries, single-arch (sm_${GPU_TUNED_CUDA_ARCH}), built against CUDA ${CUDA_VER}. Includes the Ollama-format GGUF compatibility shim. Deploy into an Ollama installation via zbrad/ollama's tuned-builds fetch script, or manually: extract and copy llama-server + libs to your Ollama lib directory, symlinking llama-server into place (see zbrad/ollama's docs/local-llama-cpp.md)." \
-    "${TARBALL}#$(basename "${TARBALL}")"
+    "llama-server + llama-quantize + $(( ${#SO_FILES[@]} )) shared libraries, single-arch (sm_${GPU_TUNED_CUDA_ARCH}), built against CUDA ${CUDA_VER}. Includes the Ollama-format GGUF compatibility shim. Easiest setup: curl -fsSL https://raw.githubusercontent.com/zbrad/llama.cpp/tuning-v47/install.sh | bash -- fetches this release, models/aliases.json, and llmsrv.sh for you. To deploy into an Ollama installation instead, see zbrad/ollama's tuned-builds fetch script, or manually: extract and copy llama-server + libs to your Ollama lib directory, symlinking llama-server into place (see zbrad/ollama's docs/local-llama-cpp.md)." \
+    "${TARBALL}#$(basename "${TARBALL}")" \
+    "${SHA_FILE}#$(basename "${SHA_FILE}")"
 
 echo ""
 echo "Done: https://github.com/zbrad/llama.cpp/releases/tag/${RELEASE_TAG}"
