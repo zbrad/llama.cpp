@@ -199,7 +199,7 @@ RELEASE_TITLE="llama.cpp ${LLAMA_TUNED_BUILD_NUMBER} (${LLAMA_TUNED_BUILD_COMMIT
 echo ""
 echo "Publishing to GitHub release ${RELEASE_TAG}..."
 gpu_tuned_publish_release "zbrad/llama.cpp" "${RELEASE_TAG}" "${RELEASE_TITLE}" \
-    "llama-server + llama-quantize + $(( ${#SO_FILES[@]} )) shared libraries, single-arch (sm_${GPU_TUNED_CUDA_ARCH}), built against CUDA ${CUDA_VER}. Includes the Ollama-format GGUF compatibility shim. Easiest setup: curl -fsSL https://raw.githubusercontent.com/zbrad/llama.cpp/tuning-v47/install.sh | bash -- fetches this release, models/aliases.json, and llmsrv.sh for you. To deploy into an Ollama installation instead, see zbrad/ollama's tuned-builds fetch script, or manually: extract and copy llama-server + libs to your Ollama lib directory, symlinking llama-server into place (see zbrad/ollama's docs/local-llama-cpp.md)." \
+    "llama-server + llama-quantize + $(( ${#SO_FILES[@]} )) shared libraries, single-arch (sm_${GPU_TUNED_CUDA_ARCH}), built against CUDA ${CUDA_VER}. Includes the Ollama-format GGUF compatibility shim. Easiest setup: curl -fsSL https://raw.githubusercontent.com/zbrad/llama.cpp/tuned-builds/install.sh | bash -- fetches this release, models/aliases.json, and llmsrv.sh for you (that URL always has the current installer; install.sh itself defaults to a pinned tuning-vN tag internally, see its own header). To deploy into an Ollama installation instead, see zbrad/ollama's tuned-builds fetch script, or manually: extract and copy llama-server + libs to your Ollama lib directory, symlinking llama-server into place (see zbrad/ollama's docs/local-llama-cpp.md)." \
     "${TARBALL}#$(basename "${TARBALL}")" \
     "${SHA_FILE}#$(basename "${SHA_FILE}")"
 
