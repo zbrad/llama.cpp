@@ -29,11 +29,15 @@ GPU_TUNED_SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${GPU_TUNED_SELF_DIR}/devices/${GPU_TUNED_ARG_VARIANT}.conf" || return 1 2>/dev/null || exit 1
 export GPU_TUNED_VARIANT GPU_TUNED_PLATFORM GPU_TUNED_CUDA_ARCH GPU_TUNED_HW_LABEL GPU_TUNED_DEVICE_LABEL
 
-if [[ "$(uname -m)" != "${GPU_TUNED_PLATFORM}" ]]; then
-    echo "ERROR: tuned/env.sh: expected platform '${GPU_TUNED_PLATFORM}' for" \
-         "variant '${GPU_TUNED_VARIANT}', but uname -m reports '$(uname -m)'." >&2
-    return 1 2>/dev/null || exit 1
-fi
+# shellcheck source=common.sh
+# Vendored from https://github.com/zbrad/tuned-common (pinned commit --
+# see common.sh's own header/sync instructions to update). Provides
+# gpu_tuned_installed_cuda_toolkits/verify_arch/verify_cuda_compat/
+# embed_build_info/assert_platform, shared verbatim across the whole
+# tuned-builds fleet instead of being hand-copied-and-edited per repo.
+source "${GPU_TUNED_SELF_DIR}/common.sh" || return 1 2>/dev/null || exit 1
+
+gpu_tuned_assert_platform "${GPU_TUNED_PLATFORM}" "${GPU_TUNED_VARIANT}" || return 1 2>/dev/null || exit 1
 
 # --- Build identity: same derivation as cmake/build-info.cmake, so a
 #     release tag always matches `llama-cli --version`'s own output. ---
@@ -46,14 +50,6 @@ REPODIR="$(cd "${GPU_TUNED_SELF_DIR}/.." && pwd)"
 : "${LLAMA_TUNED_BUILD_COMMIT:=$(git -C "${REPODIR}" rev-parse --short HEAD 2>/dev/null || echo unknown)}"
 export LLAMA_TUNED_BUILD_NUMBER LLAMA_TUNED_BUILD_COMMIT
 
-# --- List installed toolkits under /usr/local/cuda-<ver> (glob, sorted). ---
-llama_tuned_installed_cuda_toolkits() {
-    local d
-    for d in /usr/local/cuda-[0-9]*; do
-        [ -d "$d" ] && basename "$d" | sed 's/^cuda-//'
-    done | sort -V
-}
-
 # --- Resolve CUDA_VER / CUDA_TAG (specify either, derive the other) ---
 if [ -n "${CUDA_VER:-}" ]; then
     : "${CUDA_TAG:=cu${CUDA_VER//./}}"                          # 13.3 -> cu133
@@ -63,7 +59,7 @@ elif [ -n "${CUDA_TAG:-}" ]; then
     unset _cuda_digits
 fi
 if [ -z "${CUDA_VER:-}" ]; then
-    _llama_latest="$(llama_tuned_installed_cuda_toolkits | tail -1)"
+    _llama_latest="$(gpu_tuned_installed_cuda_toolkits | tail -1)"
     CUDA_VER="${_llama_latest:-13.3}"  # last-resort fallback if nothing is installed yet
     unset _llama_latest
 fi
@@ -81,85 +77,22 @@ if [ -z "${CUDA_HOME:-}" ]; then
 fi
 export PATH="$CUDA_HOME/bin:$PATH"
 
-# gpu_tuned_verify_arch <path-to-.so-or-binary> — confirms the file's
-# embedded cubin(s) are EXACTLY sm_${GPU_TUNED_CUDA_ARCH}, via cuobjdump.
-# Same name/signature as zbrad/raft/cuvs/faiss's tuned/env.sh equivalent.
-gpu_tuned_verify_arch() {
-    local so_file="$1"
-    if [[ ! -f "${so_file}" ]]; then
-        echo "ERROR: gpu_tuned_verify_arch: no such file: ${so_file}" >&2
-        return 1
-    fi
-    command -v cuobjdump >/dev/null 2>&1 || {
-        echo "ERROR: gpu_tuned_verify_arch: cuobjdump not found on PATH (expected under \$CUDA_HOME/bin)." >&2
-        return 1
-    }
-    local found found_count
-    found="$(cuobjdump --list-elf "${so_file}" 2>/dev/null | grep -oE 'sm_[0-9]+[a-z]?' | sort -u)"
-    if [[ -z "${found}" ]]; then
-        echo "ERROR: gpu_tuned_verify_arch: cuobjdump found no embedded cubins in ${so_file} at all." >&2
-        return 1
-    fi
-    found_count="$(echo "${found}" | wc -l)"
-    if [[ "${found_count}" -ne 1 ]]; then
-        echo "ERROR: ${so_file} embeds MULTIPLE arch targets ($(echo "${found}" | tr '\n' ' ')) -- expected a single-arch tuned build." >&2
-        return 1
-    fi
-    if [[ "${found}" != "sm_${GPU_TUNED_CUDA_ARCH}" ]]; then
-        echo "ERROR: ${so_file} is not built for sm_${GPU_TUNED_CUDA_ARCH} (found: ${found})." >&2
-        return 1
-    fi
-    echo "OK: ${so_file} confirmed single-arch ${found} (matches requested sm_${GPU_TUNED_CUDA_ARCH})"
-}
+# gpu_tuned_verify_arch/gpu_tuned_verify_cuda_compat now come from
+# common.sh (sourced above); call sites in package.sh pass
+# GPU_TUNED_CUDA_ARCH explicitly (the shared version takes it as an arg
+# instead of reading a global, since different repos in the fleet name
+# their arch var differently).
 
-# gpu_tuned_verify_cuda_compat <path-to-.so> <expected-cuda-ver> — confirms
-# NEEDED libcudart.so.<major> matches the CUDA major version this build
-# expects (CUDA runtime ABI is forward-compatible only within a major
-# series). Same name/signature as the other repos' tuned/env.sh equivalent.
-gpu_tuned_verify_cuda_compat() {
-    local so_file="$1" expected_cuda_ver="$2"
-    if [[ ! -f "${so_file}" ]]; then
-        echo "ERROR: gpu_tuned_verify_cuda_compat: no such file: ${so_file}" >&2
-        return 1
-    fi
-    command -v objdump >/dev/null 2>&1 || {
-        echo "ERROR: gpu_tuned_verify_cuda_compat: objdump not found on PATH." >&2
-        return 1
-    }
-    local needed found_major expected_major
-    needed="$(objdump -p "${so_file}" 2>/dev/null | grep -oE 'libcudart\.so\.[0-9]+' | head -1)"
-    if [[ -z "${needed}" ]]; then
-        echo "WARNING: ${so_file} has no direct libcudart.so.N NEEDED entry -- skipping CUDA runtime compat check." >&2
-        return 0
-    fi
-    found_major="${needed##*.}"
-    expected_major="${expected_cuda_ver%%.*}"
-    if [[ "${found_major}" != "${expected_major}" ]]; then
-        echo "ERROR: ${so_file} was linked against CUDA runtime major ${found_major}" \
-             "(${needed}), but this build expects CUDA ${expected_cuda_ver}" \
-             "(major ${expected_major})." >&2
-        return 1
-    fi
-    echo "OK: ${so_file} CUDA runtime compat confirmed (${needed}, matches expected major ${expected_major})"
-}
-
-# embed_build_info <binary-or-so-path> — embeds a greppable build-info
-# string into a custom ELF section (.llama_tuned_build_info), readable via
-# `readelf -p .llama_tuned_build_info <file>` or plain `strings`. Safe at
-# runtime: a custom section with no program-header entry is ignored by the
-# dynamic loader/exec. Same technique as zbrad/raft/cuvs's embed_build_info
-# (.raft_build_info / .cuvs_build_info).
-#
-# Defensively removes any prior stamp before adding -- objcopy --add-section
-# on a section name that already exists (e.g. re-packaging the same build
-# tree a second time without a clean rebuild) has been observed elsewhere
-# in this chain (cuvs's own comment) to corrupt the in-place rewrite.
+# embed_build_info <binary-or-so-path> — thin wrapper over
+# gpu_tuned_embed_build_info (common.sh) that keeps this repo's existing
+# section name (.llama_tuned_build_info -- unchanged, so `readelf -p
+# .llama_tuned_build_info <file>` still works exactly as documented) and
+# folds llama.cpp's own build-identity fields (no VERSION file, unlike the
+# RAPIDS repos -- BUILD_NUMBER/BUILD_COMMIT/CUDA_TAG derived above) into
+# the "version" field instead of a plain semver.
 embed_build_info() {
     local target="$1"
-    local tmp
-    tmp="$(mktemp)"
-    echo "llama.cpp-${GPU_TUNED_VARIANT} build: ${LLAMA_TUNED_BUILD_NUMBER} (${LLAMA_TUNED_BUILD_COMMIT}), ${CUDA_TAG}, ${GPU_TUNED_HW_LABEL}, https://github.com/zbrad/llama.cpp, built $(date -u +%Y-%m-%dT%H:%M:%SZ)" > "${tmp}"
-    objcopy --remove-section .llama_tuned_build_info "${target}" 2>/dev/null || true
-    objcopy --add-section .llama_tuned_build_info="${tmp}" "${target}"
-    rm -f "${tmp}"
+    gpu_tuned_embed_build_info "${target}" "${GPU_TUNED_VARIANT}" "llama_tuned" \
+        "${LLAMA_TUNED_BUILD_NUMBER} (${LLAMA_TUNED_BUILD_COMMIT}), ${CUDA_TAG}" \
+        "${GPU_TUNED_HW_LABEL}" "https://github.com/zbrad/llama.cpp"
 }
