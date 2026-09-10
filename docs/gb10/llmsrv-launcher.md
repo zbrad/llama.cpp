@@ -26,7 +26,7 @@ also works, for a model not in the table.
 | `LLMSRV_HOST` | bind address | `0.0.0.0` |
 | `LLMSRV_CTX_SIZE` | context-size ceiling (still capped to the model's own trained context if that's smaller — see below) | `262144` |
 | `LLMSRV_MEM_MARGIN_GIB` | runtime overhead margin beyond weights+KV | `8` |
-| `LLMSRV_PRIMARY_HOST` | host consumers (e.g. Open WebUI) run on; anywhere else is tagged "(remote)" | `node-2` |
+| `LLMSRV_PRIMARY_HOST` | host consumers (e.g. Open WebUI) run on; anywhere else is tagged "(remote)" | `$(hostname)` -- this host is assumed primary unless told otherwise. A real multi-node deployment sets this per node, in each node's own local environment (not committed) |
 | `LLMSRV_PORT` | override the alias table's per-model default port | (from `aliases.json`) |
 | `LLMSRV_START_TIMEOUT_SEC` | how long to wait for `/health` before giving up | `300` |
 | `LLMSRV_CRITICAL_MEM_GIB` | `MemAvailable` abort floor during startup | `2` |
