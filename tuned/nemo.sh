@@ -24,6 +24,10 @@
 #     literal "<|im_end|>" onto the end of every response. Reasoning-tag
 #     extraction into message.reasoning_content works fine without it
 #     (that's --reasoning-format auto's job, unrelated to --special).
+#   - --temp 1.0 (not 0.6): NVIDIA's own NIM reference doc gives
+#     temp=1.0/top_p=0.95 for reasoning/chat across all serving backends.
+#     0.6 traced to a misreading of Unsloth's guide, which gives that
+#     value for tool-calling specifically, not general chat.
 #
 # Usage: ~/nemo.sh [--model <name-from-models/aliases.json>|<path>] [start|stop|status|restart]
 #   (--model defaults to 'super'; command defaults to 'start')
@@ -190,7 +194,7 @@ do_start() {
         --n-gpu-layers 99 \
         --load-mode none \
         --threads 8 \
-        --temp 0.6 --top-p 0.95 --min-p 0.01 \
+        --temp 1.0 --top-p 0.95 --min-p 0.01 \
         --reasoning-preserve \
         --host "$HOST" --port "$PORT" \
         > "$log" 2>&1 &
