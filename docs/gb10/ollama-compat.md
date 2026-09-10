@@ -2,8 +2,9 @@
 
 Ollama stores some models in a non-standard GGUF format that differs from
 the canonical tensor layout the model's architecture expects. This document
-describes the compatibility shim that lets llama.cpp load those blobs
-directly, and the load-time performance work done for the GB10 (DGX Spark).
+describes the compatibility shim that detects those blobs -- translating
+some in place, refusing others with a pointer to a properly-formatted
+download -- and the load-time performance work done for the GB10 (DGX Spark).
 
 ## Background
 
@@ -14,7 +15,8 @@ including `nemotron-3-super` — were originally converted with Ollama-specific
 tensor naming conventions that do not match what the upstream architecture
 code expects.
 
-Without a fix, loading the blob directly produces a tensor shape mismatch:
+With the compat shim disabled (`OLLAMA_COMPAT_DISABLE=1`), loading the blob
+directly produces a tensor shape mismatch deep in model loading:
 
 ```
 error: tensor 'blk.1.ffn_down_exps.weight' has wrong shape
@@ -22,9 +24,18 @@ error: tensor 'blk.1.ffn_down_exps.weight' has wrong shape
   got:      [n_ff_exp=2048, moe_latent_size=1024, n_expert=64]
 ```
 
-The root cause is that `moe_latent_size` (1024) is not injected into the
-model hyperparameters when loading an Ollama-format blob, so the model code
-falls back to `n_embd` (4096) when computing the expected tensor dimension.
+The root cause is that `moe_latent_size` (1024) is not present in the
+model's hyperparameters in an Ollama-format blob, so the model code falls
+back to `n_embd` (4096) when computing the expected tensor dimension.
+
+With the shim enabled (the default), this fingerprint is now caught early
+and reported clearly instead -- see "Detection and current behavior" below.
+This used to be fixed in place (see history below), but Unsloth now
+publishes a standard-format conversion for every known latent-FFN Nemotron
+model, so llama.cpp now refuses to load this layout rather than patching
+it. Use the Unsloth GGUF (linked in
+[nemotron-super-spark.md](nemotron-super-spark.md#gguf-source)) instead of
+the Ollama blob.
 
 ## The Compat Shim
 
@@ -32,24 +43,60 @@ The shim lives in `src/llama-ollama-compat.cpp` and is compiled into
 `libllama.so`. It runs during model metadata loading, before any tensors
 are read.
 
-### Detection
+### Detection and current behavior
 
 `translate_metadata()` dispatches on the GGUF architecture string. For
 `nemotron_h_moe` it calls `handle_nemotron_h_moe()`, which fingerprints the
-blob by checking for the presence of `blk.1.ffn_latent_in` tensors or
-`mtp.*` tensors — both are artifacts of the Ollama conversion and absent in
-standard nemotron-h-moe GGUFs.
+blob by checking for the presence of `blk.1.ffn_latent_in` tensors (the
+latent-FFN, Ollama-only case) or `mtp.*` tensors (present in some
+otherwise-standard files) -- both are absent in a standard nemotron_h_moe
+GGUF.
 
-### Transformations applied
-
-| Operation | Detail |
+| Fingerprint | Result |
 |---|---|
-| Inject `moe_latent_size=1024` | Sets the hyperparameter that controls MoE projection dimension |
-| Rename `ffn_latent_in` → `ffn_latent_down` | Matches upstream tensor names |
-| Rename `ffn_latent_out` → `ffn_latent_up` | Matches upstream tensor names |
-| Skip `mtp.*` tensors | Multi-token prediction tensors not used by llama.cpp |
+| `ffn_latent_in`/`out` tensors present | **Refuses to load**, with an error naming the Unsloth GGUF as the fix. There is no in-place translation for this case anymore (see history below). |
+| Only `mtp.*` tensors present | Skips them silently and loads normally -- these are Multi-Token-Prediction tensors llama.cpp doesn't use, not a sign of a broken conversion. |
 
-The shim is disabled by setting `OLLAMA_COMPAT_DISABLE=1`.
+The shim is disabled by setting `OLLAMA_COMPAT_DISABLE=1` (this also
+disables the `mtp.*` skip, so a file that needs it will fail to load with a
+duplicate/unclaimed-tensor error instead).
+
+### History: in-place translation (removed 2026-09-04)
+
+The `ffn_latent_in`/`out` case used to be fixed in place: inject
+`moe_latent_size` (derived from the latent tensor's shape) and rename the
+tensors to `ffn_latent_down`/`up` (pure metadata/name edits -- this case
+never needed a byte-level `LoadOp`, unlike a few other archs' handlers in
+this same file). It was removed once a standard-format GGUF became
+available for the model that motivated it (nemotron-3-super): with a
+byte-correct source file on hand, silently patching a non-standard one adds
+maintenance surface for no benefit, so the shim now refuses that layout and
+points at the correct download instead.
+
+### Testing without the real model
+
+The latent-FFN case only exists in the largest Nemotron-3 tier (Super,
+reportedly also Ultra) -- Nano and Cascade-2 have no latent tensors, so
+there's no small real model that reproduces it. `tuned/fixtures/` has two
+generators that build near-empty synthetic GGUFs (a few hundred bytes) that
+only carry the fingerprint the detector checks for, no real weights:
+
+```bash
+python3 -m venv /tmp/fixture-venv && /tmp/fixture-venv/bin/pip install -r requirements.txt
+PYTHONPATH=gguf-py /tmp/fixture-venv/bin/python3 \
+  tuned/fixtures/make-nemotron-h-moe-latent-fixture.py /tmp/latent.gguf
+build/bin/llama-cli -m /tmp/latent.gguf -p hi -n 1
+# expect: a clean "...does not support loading this non-standard layout
+# directly. Download a standard-format GGUF..." error and exit 1 -- not a
+# crash, not a raw tensor-shape-mismatch error.
+
+PYTHONPATH=gguf-py /tmp/fixture-venv/bin/python3 \
+  tuned/fixtures/make-nemotron-h-moe-mtp-only-fixture.py /tmp/mtp-only.gguf
+build/bin/llama-cli -m /tmp/mtp-only.gguf -p hi -n 1
+# expect: the mtp tensor is skipped silently (no refusal message); it then
+# fails for an unrelated reason (the fixture has no other hparams/tensors),
+# confirming the two fingerprints are still handled independently.
+```
 
 ### Hook sites
 
@@ -142,6 +189,7 @@ The `mode` string reflects the actual load path:
 | `tools/mtmd/clip.cpp` | Vision model compat hook |
 | `tools/mtmd/CMakeLists.txt` | Adds `src/` to the mtmd include path |
 | `docs/gb10/nemotron-super-spark.md` | Model settings and launch flags reference |
+| `tuned/fixtures/make-nemotron-h-moe-*.py` | Synthetic GGUF generators for testing the shim without a real model |
 
 ## Deploying with Ollama
 

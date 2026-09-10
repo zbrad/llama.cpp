@@ -18,6 +18,7 @@
 #include <cstdio>
 #include <cstring>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -1137,44 +1138,39 @@ void handle_deepseekocr(const llama_model_loader * ml, gguf_context * meta,
 // =========================================================================
 //
 // Same arch name on both sides. Most variants (e.g. nemotron-cascade-2)
-// load as-is. The latent-FFN variants (e.g. nemotron-3-super 120B-A12B)
-// rename `ffn_latent_in` / `ffn_latent_out` to `ffn_latent_down` /
-// `ffn_latent_up`, and need `moe_latent_size` injected (derived from
-// the latent tensor shape).
+// load as-is once MTP tensors are skipped. The latent-FFN variants (e.g.
+// nemotron-3-super 120B-A12B) use `ffn_latent_in` / `ffn_latent_out` naming
+// and omit `moe_latent_size` -- this used to be translated in place here,
+// but a standard-format conversion is now published for every known
+// latent-FFN model (see the error message below), so refuse instead of
+// silently patching a non-standard file.
+
+bool nemotron_h_moe_has_latent_tensors(const ggml_context * ctx) {
+    return any_tensor_with_prefix(ctx, "blk.1.ffn_latent_in")
+        || any_tensor_with_prefix(ctx, "blk.0.ffn_latent_in");
+}
 
 bool detect_ollama_nemotron_h_moe(const gguf_context * meta, const ggml_context * ctx) {
     const int64_t arch_kid = gguf_find_key(meta, "general.architecture");
     if (arch_kid < 0) return false;
     if (std::strcmp(gguf_get_val_str(meta, arch_kid), "nemotron_h_moe") != 0) return false;
-    return any_tensor_with_prefix(ctx, "blk.1.ffn_latent_in")
-        || any_tensor_with_prefix(ctx, "blk.0.ffn_latent_in")
-        || any_tensor_with_prefix(ctx, "mtp.");
+    return nemotron_h_moe_has_latent_tensors(ctx) || any_tensor_with_prefix(ctx, "mtp.");
 }
 
 void handle_nemotron_h_moe(const llama_model_loader * ml, gguf_context * meta, ggml_context * ctx) {
     if (!detect_ollama_nemotron_h_moe(meta, ctx)) return;
 
-    OLLAMA_COMPAT_LOG_INFO("%s: detected Ollama-format nemotron_h_moe GGUF; applying compatibility fixes\n", __func__);
-
-    // Inject moe_latent_size for latent-FFN variants (e.g. super 120B-A12B).
-    // Standard variants (e.g. cascade-2 30B-A3B) have no latent tensors and
-    // use n_embd as the MoE inner dim — leave the key absent.
-    if (!has_key(meta, "nemotron_h_moe.moe_latent_size")) {
-        for (uint32_t b = 0; b < 1024; ++b) {
-            char name[64];
-            std::snprintf(name, sizeof(name), "blk.%u.ffn_latent_in.weight", b);
-            if (ggml_tensor * t = ggml_get_tensor(ctx, name)) {
-                gguf_set_val_u32(meta, "nemotron_h_moe.moe_latent_size",
-                                 (uint32_t) t->ne[1]);
-                break;
-            }
-        }
+    if (nemotron_h_moe_has_latent_tensors(ctx)) {
+        throw std::runtime_error(format(
+            "%s: this GGUF looks like an Ollama-native nemotron_h_moe conversion with a "
+            "latent-FFN MoE (found ffn_latent_in tensors, no moe_latent_size) -- llama.cpp "
+            "does not support loading this non-standard layout directly. Download a "
+            "standard-format GGUF conversion of this model instead -- for nemotron-3-super, "
+            "see https://huggingface.co/unsloth/NVIDIA-Nemotron-3-Super-120B-A12B-GGUF",
+            __func__));
     }
 
-    // Rename the latent projection tensors to llama.cpp's naming (no-op when
-    // the file has no latent tensors).
-    rename_tensors_containing(meta, ctx, ".ffn_latent_in",  ".ffn_latent_down");
-    rename_tensors_containing(meta, ctx, ".ffn_latent_out", ".ffn_latent_up");
+    OLLAMA_COMPAT_LOG_INFO("%s: detected Ollama-format nemotron_h_moe GGUF with mtp tensors; skipping them\n", __func__);
 
     // Drop MTP (Multi-Token Prediction) tensors. Existing files can include
     // one tensor per expert (`mtp.layers.X.mixer.experts.Y.{up,down}_proj`);
@@ -1250,8 +1246,9 @@ void handle_nemotron_h_omni(const llama_model_loader * ml,
     add_skip_prefix(ml, "v.");
     add_skip_prefix(ml, "mm.");
 
-    // Reuse the existing nemotron_h_moe fixes if this unified model also has
-    // latent FFN or MTP tensors in future variants.
+    // Reuse the existing nemotron_h_moe handling (MTP skip, or the latent-FFN
+    // refusal above) if this unified model's text side also has those
+    // tensors in future variants.
     if (arch_name == "nemotron_h_moe") handle_nemotron_h_moe(ml, meta, ctx);
 }
 
