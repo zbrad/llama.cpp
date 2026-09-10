@@ -2,6 +2,11 @@ cmake_minimum_required(VERSION 3.14...3.28) # for add_link_options and implicit 
 project("llama.cpp" C CXX)
 include(CheckIncludeFileCXX)
 
+# Optional local build customizations -- see local/cmake/custom.cmake.
+if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/local/cmake/custom.cmake")
+    include(local/cmake/custom.cmake)
+endif()
+
 ### llama.cpp version
 set(LLAMA_VERSION_MAJOR 0)
 set(LLAMA_VERSION_MINOR 4)
