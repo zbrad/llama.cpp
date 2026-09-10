@@ -11,7 +11,7 @@
     ],
     "models": {
         "super": {
-            "filename": "Nemotron-3-Super-120B-A12B.gguf",
+            "filename": "NVIDIA-Nemotron-3-Super-120B-A12B-UD-Q4_K_XL-00001-of-00003.gguf",
             "alias": "nemotron-3-super",
             "chat_template_file": "models/templates/NVIDIA-Nemotron-3-Super-120B-A12B.jinja",
             "port": 8091
