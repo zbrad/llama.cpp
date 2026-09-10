@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# ~/nemo.sh — launch a nemotron model via bare llama-server as a
-# systemd --user service (no sudo needed for start/stop/restart), with
-# all the fixes worked out this session (see the -home-zbrad-gh project
-# memory's tuned-builds-expansion-plan.md for the full writeup of each):
+# ~/llmsrv.sh — launch a GGUF model via bare llama-server as a
+# systemd --user service (no sudo needed for start/stop/restart). See
+# docs/gb10/llmsrv-launcher.md for the full writeup of this script's
+# design (usage, env overrides, the memory-safety mechanisms below, and
+# why --n-gpu-layers is fixed at 99). Fixes applied here:
 #
 #   - --chat-template-file (super only): that GGUF has no embedded
 #     tokenizer.chat_template (it's the Ollama-blob-sourced copy). Without
@@ -30,32 +31,33 @@
 #     value for tool-calling specifically, not general chat.
 #   - --ctx-size is capped to the model's own trained context length (read
 #     from the GGUF header via gguf-py) instead of always requesting
-#     NEMO_CTX_SIZE, and check_mem's pre-flight now sizes the KV cache from
-#     that same metadata instead of a flat weights-only estimate. Plus a
-#     post-start guard (wait_for_healthy_or_die) that stops the unit itself
-#     if MemAvailable collapses before it comes up healthy. All added after
-#     the 2026-09-06 node-1 incident: a forced --ctx-size 262144 on a
-#     40960-trained-context model, while ComfyUI was already GPU-resident,
-#     overcommitted GB10's shared unified memory and wedged a driver-level
-#     lock (nvidia-smi included) for 16+ minutes with nothing watching to
-#     kill it, hard-locking the box for ~19h45m with no OOM-killer and no
-#     hardware watchdog to recover it. See the -home-zbrad-gh/ComfyUI
-#     project memory's node1_comfyui_oom_hang_2026-09-06.md for the full
-#     writeup.
+#     LLMSRV_CTX_SIZE, and check_mem's pre-flight now sizes the KV cache
+#     from that same metadata instead of a flat weights-only estimate. Plus
+#     a post-start guard (wait_for_healthy_or_die) that stops the unit
+#     itself if MemAvailable collapses before it comes up healthy. All
+#     added after the 2026-09-06 node-1 incident: a forced --ctx-size
+#     262144 on a 40960-trained-context model, while ComfyUI was already
+#     GPU-resident, overcommitted GB10's shared unified memory and wedged a
+#     driver-level lock (nvidia-smi included) for 16+ minutes with nothing
+#     watching to kill it, hard-locking the box for ~19h45m with no
+#     OOM-killer and no hardware watchdog to recover it. See
+#     docs/gb10/llmsrv-launcher.md's "Memory safety on unified memory"
+#     section for the full incident writeup.
 #
-# Usage: ~/nemo.sh [--model <name-from-models/aliases.json>|<path>] [start|stop|status|restart]
+# Usage: ~/llmsrv.sh [--model <name-from-models/aliases.json>|<path>] [start|stop|status|restart]
 #   (--model defaults to 'super'; command defaults to 'start')
 #   Known model names, their filenames, aliases, and chat templates come
 #   from models/aliases.json in the llama.cpp checkout -- see that file's
 #   own comment for the search-path resolution it uses.
-#   Env overrides: NEMO_HOST, NEMO_CTX_SIZE (ceiling only now -- still
+#   Env overrides: LLMSRV_HOST, LLMSRV_CTX_SIZE (ceiling only now -- still
 #   clamped down to the model's trained context if that's smaller),
-#   NEMO_MEM_MARGIN_GIB, NEMO_PRIMARY_HOST, NEMO_PORT, NEMO_START_TIMEOUT_SEC
-#   (how long to wait for /health before giving up), NEMO_CRITICAL_MEM_GIB
-#   (abort threshold for MemAvailable during startup).
+#   LLMSRV_MEM_MARGIN_GIB, LLMSRV_PRIMARY_HOST, LLMSRV_PORT,
+#   LLMSRV_START_TIMEOUT_SEC (how long to wait for /health before giving
+#   up), LLMSRV_CRITICAL_MEM_GIB (abort threshold for MemAvailable during
+#   startup).
 #
 # Process management: generates and drives a systemd --user unit
-# (nemo-<alias>.service) rather than a bare nohup'd background process --
+# (llmsrv-<alias>.service) rather than a bare nohup'd background process --
 # matches how node-2 runs nano, and needs no sudo for restart/stop.
 # Note: --user services stop when your login session ends unless linger is
 # enabled for this account (`loginctl show-user $USER -p Linger`); this
@@ -67,12 +69,12 @@ REPODIR="/home/zbrad/gh/llama.cpp"
 LLAMA_SERVER="${REPODIR}/build/bin/llama-server"
 ALIASES_FILE="${REPODIR}/models/aliases.json"
 UNIT_DIR="${HOME}/.config/systemd/user"
-HOST="${NEMO_HOST:-0.0.0.0}"
-CTX_SIZE="${NEMO_CTX_SIZE:-262144}"
-MEM_MARGIN_GIB="${NEMO_MEM_MARGIN_GIB:-8}"  # runtime overhead beyond weights+KV (activations, CUDA context, output buffers) -- KV cache itself is now sized explicitly in check_mem, not folded into this margin
-PRIMARY_HOST="${NEMO_PRIMARY_HOST:-node-2}"  # host consumers (e.g. Open WebUI) run on; anywhere else is "remote"
-START_TIMEOUT_SEC="${NEMO_START_TIMEOUT_SEC:-300}"  # max time to wait for /health before stopping the unit and giving up
-CRITICAL_MEM_GIB="${NEMO_CRITICAL_MEM_GIB:-2}"  # MemAvailable floor during startup; cross it and we stop the unit rather than let the driver wedge
+HOST="${LLMSRV_HOST:-0.0.0.0}"
+CTX_SIZE="${LLMSRV_CTX_SIZE:-262144}"
+MEM_MARGIN_GIB="${LLMSRV_MEM_MARGIN_GIB:-8}"  # runtime overhead beyond weights+KV (activations, CUDA context, output buffers) -- KV cache itself is now sized explicitly in check_mem, not folded into this margin
+PRIMARY_HOST="${LLMSRV_PRIMARY_HOST:-node-2}"  # host consumers (e.g. Open WebUI) run on; anywhere else is "remote"
+START_TIMEOUT_SEC="${LLMSRV_START_TIMEOUT_SEC:-300}"  # max time to wait for /health before stopping the unit and giving up
+CRITICAL_MEM_GIB="${LLMSRV_CRITICAL_MEM_GIB:-2}"  # MemAvailable floor during startup; cross it and we stop the unit rather than let the driver wedge
 
 die() { echo "error: $*" >&2; exit 1; }
 
@@ -213,7 +215,7 @@ resolve_launch_config() {
     gpu_mem_total_mib="$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1)"
     if [[ "$gpu_mem_total_mib" =~ ^[0-9]+$ ]]; then
         cat >&2 <<WARN
-!!! nemo.sh: WARNING -- nvidia-smi reports a real VRAM size (${gpu_mem_total_mib}MiB),
+!!! llmsrv.sh: WARNING -- nvidia-smi reports a real VRAM size (${gpu_mem_total_mib}MiB),
 !!! not the unified-memory "N/A" this script assumes (GB10 only). This script
 !!! hardcodes --n-gpu-layers 99 and sizes memory via check_mem's system-RAM-only
 !!! estimate on the assumption there's no separate VRAM ceiling -- both are
@@ -242,12 +244,12 @@ WARN
 
     # Read the model's own trained context length (and KV-cache dimensions)
     # straight from the GGUF header, and cap CTX_SIZE down to it -- this is
-    # the fix for the 2026-09-06 incident: NEMO_CTX_SIZE's 262144 default was
-    # being applied to every model regardless of what it was actually trained
-    # for (Qwen3-4B: 40960, 6.4x smaller), massively over-sizing the KV
-    # cache. Larger-context models (nemotron's hybrid archs, trained past 1M)
-    # are unaffected since 262144 was already below their real ceiling. If
-    # introspection fails (no python3/gguf-py, or an unrecognized
+    # the fix for the 2026-09-06 incident: LLMSRV_CTX_SIZE's 262144 default
+    # was being applied to every model regardless of what it was actually
+    # trained for (Qwen3-4B: 40960, 6.4x smaller), massively over-sizing the
+    # KV cache. Larger-context models (nemotron's hybrid archs, trained past
+    # 1M) are unaffected since 262144 was already below their real ceiling.
+    # If introspection fails (no python3/gguf-py, or an unrecognized
     # architecture), CONTEXT_LENGTH/HEAD_COUNT_KV/etc. stay unset -- CTX_SIZE
     # keeps its pre-existing value and check_mem falls back to a
     # weights-only estimate, same as before this change.
@@ -257,24 +259,24 @@ WARN
         eval "$meta_out"
     fi
     if [[ -n "${CONTEXT_LENGTH:-}" ]] && (( CONTEXT_LENGTH > 0 )) && (( CTX_SIZE > CONTEXT_LENGTH )); then
-        echo "nemo.sh: capping --ctx-size ${CTX_SIZE} -> ${CONTEXT_LENGTH} (${MODEL_LABEL}'s own trained context; set NEMO_CTX_SIZE explicitly to override)" >&2
+        echo "llmsrv.sh: capping --ctx-size ${CTX_SIZE} -> ${CONTEXT_LENGTH} (${MODEL_LABEL}'s own trained context; set LLMSRV_CTX_SIZE explicitly to override)" >&2
         CTX_SIZE="$CONTEXT_LENGTH"
     fi
 }
 
 # Each alias gets its own default port (models/aliases.json's "port" field)
 # so multiple models can run as parallel systemd --user services without
-# colliding; NEMO_PORT still wins as an explicit override; a bare
+# colliding; LLMSRV_PORT still wins as an explicit override; a bare
 # absolute-path invocation (no alias entry) falls back to 8091 (see
 # DEFAULT_PORT set in the case block above).
-PORT="${NEMO_PORT:-$DEFAULT_PORT}"
+PORT="${LLMSRV_PORT:-$DEFAULT_PORT}"
 
 # Tag the API-visible alias (not MODEL_LABEL -- that feeds the unit/file
 # names) when this script isn't running on PRIMARY_HOST, so a consumer like
 # Open WebUI can tell at a glance that a model came from another machine.
 [[ "$(hostname)" != "$PRIMARY_HOST" ]] && MODEL_ALIAS="${MODEL_ALIAS} (remote)"
 
-UNIT_NAME="nemo-${MODEL_LABEL}.service"
+UNIT_NAME="llmsrv-${MODEL_LABEL}.service"
 UNIT_FILE="${UNIT_DIR}/${UNIT_NAME}"
 
 # check_mem — refuse to start if there isn't enough free+reclaimable memory
@@ -282,7 +284,7 @@ UNIT_FILE="${UNIT_DIR}/${UNIT_NAME}"
 # plus a runtime-overhead margin, rather than letting it OOM (or thrash
 # swap) partway through a multi-minute load. MemAvailable already folds in
 # reclaimable page cache, so a low reading here isn't stale cache -- on
-# this GB10 box it's usually another nemo unit's model still resident, or
+# this GB10 box it's usually another llmsrv unit's model still resident, or
 # its GPU/UVM pool, which the driver doesn't hand back to the OS the
 # instant the process exits.
 #
@@ -318,7 +320,7 @@ check_mem() {
 
     avail_kib="$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)"
     avail_gib=$(( avail_kib / 1024 / 1024 ))
-    echo "nemo.sh: ${MODEL_LABEL} needs ~${required_gib}GiB (weights ${model_gib}GiB + ${kv_note} + ${MEM_MARGIN_GIB}GiB margin); ${avail_gib}GiB available" >&2
+    echo "llmsrv.sh: ${MODEL_LABEL} needs ~${required_gib}GiB (weights ${model_gib}GiB + ${kv_note} + ${MEM_MARGIN_GIB}GiB margin); ${avail_gib}GiB available" >&2
     (( avail_gib >= required_gib )) && return 0
 
     # Near miss: sync and try an opportunistic drop_caches before giving up.
@@ -333,11 +335,11 @@ check_mem() {
     avail_gib=$(( avail_kib / 1024 / 1024 ))
     (( avail_gib >= required_gib )) && return 0
 
-    other_units="$(systemctl --user list-units --type=service --state=running --no-legend --plain 'nemo-*.service' 2>/dev/null \
+    other_units="$(systemctl --user list-units --type=service --state=running --no-legend --plain 'llmsrv-*.service' 2>/dev/null \
         | awk -v skip="$UNIT_NAME" '$1 != skip {print $1}')"
 
     hint="Free up memory or stop other processes first."
-    [[ -n "$other_units" ]] && hint="Stop the other running nemo unit(s) first: ${other_units//$'\n'/, }"
+    [[ -n "$other_units" ]] && hint="Stop the other running llmsrv unit(s) first: ${other_units//$'\n'/, }"
 
     die "not enough available memory: need ~${required_gib}GiB (weights ${model_gib}GiB + ${kv_note} + ${MEM_MARGIN_GIB}GiB margin), only ${avail_gib}GiB available (see 'free -h'). ${hint}"
 }
@@ -353,7 +355,7 @@ write_unit() {
     mkdir -p "$UNIT_DIR"
     cat > "$UNIT_FILE" <<EOF
 [Unit]
-Description=nemo.sh - ${MODEL_ALIAS} (llama-server)
+Description=llmsrv.sh - ${MODEL_ALIAS} (llama-server)
 After=network.target
 
 [Service]
@@ -427,7 +429,7 @@ wait_for_healthy_or_die() {
         avail_gib=$(( $(awk '/^MemAvailable:/ {print $2}' /proc/meminfo) / 1024 / 1024 ))
         if (( avail_gib < CRITICAL_MEM_GIB )); then
             systemctl --user stop "$UNIT_NAME"
-            die "aborted ${UNIT_NAME}: MemAvailable dropped to ${avail_gib}GiB (< ${CRITICAL_MEM_GIB}GiB floor) during startup -- stopped it before the driver wedged instead of letting it keep running. Lower --ctx-size (NEMO_CTX_SIZE), stop other GPU-resident processes, or raise NEMO_CRITICAL_MEM_GIB if this is a known-safe dip for this model."
+            die "aborted ${UNIT_NAME}: MemAvailable dropped to ${avail_gib}GiB (< ${CRITICAL_MEM_GIB}GiB floor) during startup -- stopped it before the driver wedged instead of letting it keep running. Lower --ctx-size (LLMSRV_CTX_SIZE), stop other GPU-resident processes, or raise LLMSRV_CRITICAL_MEM_GIB if this is a known-safe dip for this model."
         fi
 
         sleep 2
@@ -435,7 +437,7 @@ wait_for_healthy_or_die() {
     done
 
     systemctl --user stop "$UNIT_NAME"
-    die "${UNIT_NAME} did not report healthy within ${START_TIMEOUT_SEC}s -- stopped it (see 'journalctl --user -u ${UNIT_NAME}'). Raise NEMO_START_TIMEOUT_SEC if this model just needs longer to load."
+    die "${UNIT_NAME} did not report healthy within ${START_TIMEOUT_SEC}s -- stopped it (see 'journalctl --user -u ${UNIT_NAME}'). Raise LLMSRV_START_TIMEOUT_SEC if this model just needs longer to load."
 }
 
 do_start() {
