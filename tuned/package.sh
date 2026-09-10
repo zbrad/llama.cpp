@@ -67,7 +67,7 @@ embed_build_info "${CUDA_SO}"
 DIST_DIR="${REPODIR}/dist/${GPU_TUNED_VARIANT}"
 rm -rf "${DIST_DIR}"
 mkdir -p "${DIST_DIR}"
-TARBALL="${DIST_DIR}/llama-cpp-${GPU_TUNED_VARIANT}-${LLAMA_TUNED_BUILD_NUMBER}-${CUDA_TAG}.tar.gz"
+TARBALL="${DIST_DIR}/llama-cpp-${LLAMA_TUNED_BUILD_NUMBER}-${GPU_TUNED_VARIANT}-${CUDA_TAG}.tar.gz"
 
 STAGE="$(mktemp -d)"
 trap 'rm -rf "${STAGE}"' EXIT
@@ -87,6 +87,66 @@ for so in "${SO_FILES[@]}"; do
     if [[ -n "${soname}" && "${soname}" != "${so_name}" ]]; then
         cp -p "${so}" "${STAGE}/${soname}"
     fi
+done
+
+# Detect and stage system-library dependencies that CMake itself never
+# produces (so the SO_FILES glob above can't find them) but that every
+# staged binary/lib links against anyway. Concrete case that motivated
+# this: libnccl.so.2 -- confirmed via a real deploy to a second machine
+# failing with "error while loading shared libraries: libnccl.so.2: cannot
+# open shared object file", even though that machine had a matching
+# driver/CUDA-toolkit setup. `ldd` showed every staged file links it, but
+# it's just the build machine's apt package (libnccl2), never copied into
+# BIN_DIR by CMake.
+#
+# Allowlist below is everything assumed already present on any target that
+# passed precheck-tuned.sh, so it's deliberately NOT bundled:
+#   - base glibc/gcc runtime (libc, libm, libdl, libpthread, librt,
+#     libgcc_s, libstdc++, libgomp, ld-linux, linux-vdso)
+#   - libcuda.so.* -- the NVIDIA *driver's* userspace lib. Must NEVER be
+#     bundled: it has to be the exact one matching the target's own
+#     installed driver, not the build machine's, or you'd potentially ship
+#     a mismatched driver ABI.
+#   - libcudart/libcublas/libcublasLt -- CUDA *toolkit* runtime libs,
+#     already required by precheck-tuned.sh's CUDA-toolkit-presence check.
+# Anything else resolved to a real system path -- like libnccl -- gets
+# staged automatically, so this doesn't need a new hardcoded name every
+# time the build happens to pick up a fresh stray dependency.
+ASSUME_PRESENT_RE='^(linux-vdso\.so|ld-linux|libc\.so|libm\.so|libdl\.so|libpthread\.so|librt\.so|libgcc_s\.so|libstdc\+\+\.so|libgomp\.so|libcuda\.so|libcudart\.so|libcublas\.so|libcublasLt\.so)'
+
+declare -A EXTRA_SYSTEM_LIBS=()
+for f in "${BIN_DIR}/llama-server" "${BIN_DIR}/llama-quantize" "${SO_FILES[@]}"; do
+    while IFS= read -r deppath; do
+        [[ -n "${deppath}" ]] || continue
+        dep_name="$(basename "${deppath}")"
+        [[ "${dep_name}" =~ ${ASSUME_PRESENT_RE} ]] && continue
+        [[ "${deppath}" == "${BIN_DIR}"/* ]] && continue   # our own staged libs
+        EXTRA_SYSTEM_LIBS["${deppath}"]=1
+    done < <(ldd "${f}" 2>/dev/null | awk '
+        /=>/  { if ($3 ~ /^\//) print $3; next }
+        /^[[:space:]]*\// { print $1 }
+    ')
+done
+
+if [[ "${#EXTRA_SYSTEM_LIBS[@]}" -gt 0 ]]; then
+    echo ""
+    echo "Staging extra system library dependencies (not produced by this"
+    echo "build, not assumed already present on the target):"
+fi
+for deppath in "${!EXTRA_SYSTEM_LIBS[@]}"; do
+    real="$(readlink -f "${deppath}")"
+    if [[ ! -f "${real}" ]]; then
+        echo "ERROR: dependency ${deppath} not found on this machine." >&2
+        exit 1
+    fi
+    echo "  ${real}"
+    real_name="$(basename "${real}")"
+    cp -p "${real}" "${STAGE}/${real_name}"
+    soname="$(readelf -d "${real}" 2>/dev/null | grep -oP '(?<=Library soname: \[)[^\]]+')"
+    if [[ -n "${soname}" && "${soname}" != "${real_name}" && ! -e "${STAGE}/${soname}" ]]; then
+        cp -p "${real}" "${STAGE}/${soname}"
+    fi
+    SO_FILES+=("${real}")
 done
 
 # Patch RUNPATH on every staged binary/lib to $ORIGIN, replacing the
