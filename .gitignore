@@ -1,6 +1,10 @@
 # tuned/package.sh output (built tarballs, not source)
 /dist/
 
+# tuned/package.sh's real hostname->alias mapping for release-notes redaction
+# (see tuned/hostname-aliases.local.example) -- never commit real hostnames
+/tuned/hostname-aliases.local
+
 # Extensions
 
 *.a

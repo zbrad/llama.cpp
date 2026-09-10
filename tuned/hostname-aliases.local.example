@@ -1,0 +1,12 @@
+# tuned/package.sh's real-hostname -> public-alias mapping for release
+# notes. Copy this file to hostname-aliases.local (gitignored -- never
+# commit the real one) and fill in real names on each machine that
+# publishes releases. One "realname=alias" pair per line; blank lines
+# and lines starting with # are ignored. package.sh applies these
+# substitutions to the release-notes text before publishing, so a real
+# internal hostname never ends up in a public GitHub release description
+# even if a future notes string happens to mention one.
+#
+# Example (fake names, safe to commit as-is):
+realhost-1=test-node-1
+realhost-2=test-node-2
