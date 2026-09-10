@@ -10,6 +10,18 @@
 - **Languages**: English, French, German, Italian, Japanese, Spanish, Chinese
 - **Training cutoff**: February 2026
 
+## GGUF Source
+
+Use Unsloth's standard-format conversion, not an Ollama-pulled blob:
+https://huggingface.co/unsloth/NVIDIA-Nemotron-3-Super-120B-A12B-GGUF
+
+Ollama's own blob for this model uses non-standard tensor naming for its
+latent-FFN MoE layers (`ffn_latent_in`/`out` instead of `ffn_latent_down`/
+`up`, no `moe_latent_size` key). llama.cpp used to translate this in place
+via a compat shim (`src/llama-ollama-compat.cpp`); since Unsloth publishes a
+byte-correct standard conversion, the shim now refuses to load that layout
+instead of patching it -- see [ollama-compat.md](ollama-compat.md).
+
 ## Quantization Options
 
 | Quant     | VRAM   | Notes                                      |

@@ -33,11 +33,14 @@ build/bin/lib*.so.0.13.1        # shared libraries
 
 Some models stored in Ollama's blob format use non-standard GGUF tensor
 layouts that don't match the canonical architecture expectations. The compat
-shim handles these transparently.
+shim fingerprints these at metadata-load time and either fixes them up
+transparently or refuses to load with a pointer to a properly-formatted
+download, depending on the case.
 
 ### The Problem
 
-When loading `nemotron-3-super` from an Ollama-format blob without the shim:
+Loading `nemotron-3-super` from an Ollama-format blob, with the shim
+disabled (`OLLAMA_COMPAT_DISABLE=1`):
 
 ```
 error: tensor 'blk.1.ffn_down_exps.weight' has wrong shape
@@ -52,19 +55,25 @@ using `n_embd` (4096) instead of the correct projection dimension (1024).
 ### The Solution
 
 The compat shim in `src/llama-ollama-compat.cpp` runs during metadata loading
-and:
+and fingerprints `nemotron_h_moe` blobs by checking for `blk.1.ffn_latent_in`
+or `mtp.*` tensors:
 
-1. **Detects** Ollama-format blobs by fingerprinting: checking for `blk.1.ffn_latent_in` or `mtp.*` tensors
-2. **Injects** `moe_latent_size=1024` into hyperparameters
-3. **Renames** tensors: `ffn_latent_in` → `ffn_latent_down`, `ffn_latent_out` → `ffn_latent_up`
-4. **Skips** multi-token prediction tensors (`mtp.*`)
+- **`ffn_latent_in`/`out` tensors present** (the latent-FFN case, e.g.
+  `nemotron-3-super`) — **refuses to load**, naming Unsloth's standard-format
+  GGUF as the fix (see [nemotron-super-spark.md](nemotron-super-spark.md#gguf-source)).
+  There's no in-place translation for this case; a byte-correct download
+  exists, so patching a non-standard one isn't worth the maintenance surface.
+- **Only `mtp.*` tensors present** — skips them silently and loads normally;
+  these are Multi-Token-Prediction tensors llama.cpp doesn't use, not a sign
+  of a broken conversion.
 
 The shim is wired into three call sites in `llama-model-loader.cpp`:
 - `translate_metadata()` — after arch string is read
 - `should_skip_tensor()` — in the tensor index loop
 - `maybe_load_text_tensor()` — in the load path
 
-Disable with `OLLAMA_COMPAT_DISABLE=1` if needed.
+Disable with `OLLAMA_COMPAT_DISABLE=1` if needed (this also disables the
+`mtp.*` skip).
 
 For full details, see [ollama-compat.md](ollama-compat.md).
 
