@@ -54,7 +54,7 @@ if [[ "${#SO_FILES[@]}" -eq 0 ]]; then
 fi
 
 CUDA_SO="${BIN_DIR}/$(basename "$(find "${BIN_DIR}" -maxdepth 1 -name 'libggml-cuda.so.*' -not -type l | head -1)")"
-gpu_tuned_verify_arch "${CUDA_SO}"
+gpu_tuned_verify_arch "${CUDA_SO}" "${GPU_TUNED_CUDA_ARCH}"
 gpu_tuned_verify_cuda_compat "${CUDA_SO}" "${CUDA_VER}"
 
 # Stamp build-info onto the two primary consumer-facing artifacts: the
