@@ -48,16 +48,17 @@
 #   (--model defaults to 'super'; command defaults to 'start')
 #   Known model names, their filenames, aliases, and chat templates come
 #   from models/aliases.json -- either the llama.cpp checkout this script
-#   is running from, or, on a release-only machine with no checkout at
-#   all, a self-contained copy at $XDG_DATA_HOME/llmsrv (see
-#   tuned/install-llmsrv.sh). See aliases.json's own comment for the
-#   search-path resolution it uses to find each model's GGUF file.
-#   Env overrides: LLMSRV_HOST, LLMSRV_CTX_SIZE (ceiling only now -- still
-#   clamped down to the model's trained context if that's smaller),
-#   LLMSRV_MEM_MARGIN_GIB, LLMSRV_PRIMARY_HOST, LLMSRV_PORT,
-#   LLMSRV_START_TIMEOUT_SEC (how long to wait for /health before giving
-#   up), LLMSRV_CRITICAL_MEM_GIB (abort threshold for MemAvailable during
-#   startup).
+#   is running from, a release-only install at $XDG_DATA_HOME/llmsrv (the
+#   default target of install.sh), or, for an install.sh --dir
+#   elsewhere (including the current folder), whatever LLMSRV_HOME points
+#   at. See aliases.json's own comment for the search-path resolution it
+#   uses to find each model's GGUF file.
+#   Env overrides: LLMSRV_HOME (explicit install dir, see above), LLMSRV_HOST,
+#   LLMSRV_CTX_SIZE (ceiling only now -- still clamped down to the model's
+#   trained context if that's smaller), LLMSRV_MEM_MARGIN_GIB,
+#   LLMSRV_PRIMARY_HOST, LLMSRV_PORT, LLMSRV_START_TIMEOUT_SEC (how long to
+#   wait for /health before giving up), LLMSRV_CRITICAL_MEM_GIB (abort
+#   threshold for MemAvailable during startup).
 #
 # Process management: generates and drives a systemd --user unit
 # (llmsrv-<alias>.service) rather than a bare nohup'd background process --
@@ -71,19 +72,25 @@ set -euo pipefail
 # REPODIR self-locates from this script's own real path (resolving the
 # ~/.local/bin/llmsrv.sh symlink first) rather than a hardcoded checkout
 # path -- matches tuned/env.sh's/package.sh's own convention. DATA_DIR then
-# picks between two layouts: a full git checkout (models/aliases.json
-# present next to REPODIR -- node-1/node-2 today), or RESOURCE_DIR, a
-# self-contained copy for a release-only machine with no checkout at all,
-# populated by tuned/install-llmsrv.sh (mirrors the same models/... layout,
-# so every path below works unmodified either way).
+# picks between three layouts, highest priority first: LLMSRV_HOME (an
+# explicit install.sh --dir target, since there's no fixed path to detect
+# one at), a full git checkout (models/aliases.json present next to
+# REPODIR -- node-1/node-2 today), or RESOURCE_DIR, install.sh's
+# own default target for a release-only machine with no checkout at all
+# (mirrors the same models/... layout, so every path below works
+# unmodified in any of the three cases).
 REPODIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 RESOURCE_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/llmsrv"
-if [[ -f "${REPODIR}/models/aliases.json" ]]; then
+if [[ -n "${LLMSRV_HOME:-}" ]]; then
+    DATA_DIR="${LLMSRV_HOME}"
+elif [[ -f "${REPODIR}/models/aliases.json" ]]; then
     DATA_DIR="${REPODIR}"
 else
     DATA_DIR="${RESOURCE_DIR}"
 fi
-if [[ -x "${REPODIR}/build/bin/llama-server" ]]; then
+if [[ -n "${LLMSRV_HOME:-}" && -x "${LLMSRV_HOME}/llama-server" ]]; then
+    LLAMA_SERVER="${LLMSRV_HOME}/llama-server"
+elif [[ -x "${REPODIR}/build/bin/llama-server" ]]; then
     LLAMA_SERVER="${REPODIR}/build/bin/llama-server"
 elif command -v llama-server >/dev/null 2>&1; then
     LLAMA_SERVER="$(command -v llama-server)"
