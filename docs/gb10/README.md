@@ -204,6 +204,7 @@ This copies the build to `/usr/local/lib/ollama/local_llama_cpp/` and symlinks
 - [ollama-compat.md](ollama-compat.md) — Detailed compat shim design and rationale
 - [nemotron-super-spark.md](nemotron-super-spark.md) — Model-specific launch flags and quantization options
 - [nemotron-nano-gb10.md](nemotron-nano-gb10.md) - Nano sibling: launch flags, sampling, systemd example
+- [llmsrv-launcher.md](llmsrv-launcher.md) — `tuned/llmsrv.sh`, the multi-model systemd `--user` service launcher used to actually run these models day to day
 - [local-llama-cpp.md](../../ollama/docs/local-llama-cpp.md) (Ollama repo) — When and how to use a local llama.cpp build with Ollama
 - NVIDIA DGX Spark guide: https://build.nvidia.com/spark/llama-cpp/overview
 - Nemotron-3-Super model card: https://build.nvidia.com/nvidia/nemotron-3-super-120b-a12b/modelcard
