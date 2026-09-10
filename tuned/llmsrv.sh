@@ -47,8 +47,11 @@
 # Usage: ~/llmsrv.sh [--model <name-from-models/aliases.json>|<path>] [start|stop|status|restart]
 #   (--model defaults to 'super'; command defaults to 'start')
 #   Known model names, their filenames, aliases, and chat templates come
-#   from models/aliases.json in the llama.cpp checkout -- see that file's
-#   own comment for the search-path resolution it uses.
+#   from models/aliases.json -- either the llama.cpp checkout this script
+#   is running from, or, on a release-only machine with no checkout at
+#   all, a self-contained copy at $XDG_DATA_HOME/llmsrv (see
+#   tuned/install-llmsrv.sh). See aliases.json's own comment for the
+#   search-path resolution it uses to find each model's GGUF file.
 #   Env overrides: LLMSRV_HOST, LLMSRV_CTX_SIZE (ceiling only now -- still
 #   clamped down to the model's trained context if that's smaller),
 #   LLMSRV_MEM_MARGIN_GIB, LLMSRV_PRIMARY_HOST, LLMSRV_PORT,
@@ -65,9 +68,29 @@
 # possibly-privileged step).
 set -euo pipefail
 
-REPODIR="/home/zbrad/gh/llama.cpp"
-LLAMA_SERVER="${REPODIR}/build/bin/llama-server"
-ALIASES_FILE="${REPODIR}/models/aliases.json"
+# REPODIR self-locates from this script's own real path (resolving the
+# ~/.local/bin/llmsrv.sh symlink first) rather than a hardcoded checkout
+# path -- matches tuned/env.sh's/package.sh's own convention. DATA_DIR then
+# picks between two layouts: a full git checkout (models/aliases.json
+# present next to REPODIR -- node-1/node-2 today), or RESOURCE_DIR, a
+# self-contained copy for a release-only machine with no checkout at all,
+# populated by tuned/install-llmsrv.sh (mirrors the same models/... layout,
+# so every path below works unmodified either way).
+REPODIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+RESOURCE_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/llmsrv"
+if [[ -f "${REPODIR}/models/aliases.json" ]]; then
+    DATA_DIR="${REPODIR}"
+else
+    DATA_DIR="${RESOURCE_DIR}"
+fi
+if [[ -x "${REPODIR}/build/bin/llama-server" ]]; then
+    LLAMA_SERVER="${REPODIR}/build/bin/llama-server"
+elif command -v llama-server >/dev/null 2>&1; then
+    LLAMA_SERVER="$(command -v llama-server)"
+else
+    LLAMA_SERVER="${REPODIR}/build/bin/llama-server"  # doesn't exist; do_start's own check reports this path
+fi
+ALIASES_FILE="${DATA_DIR}/models/aliases.json"
 UNIT_DIR="${HOME}/.config/systemd/user"
 HOST="${LLMSRV_HOST:-0.0.0.0}"
 CTX_SIZE="${LLMSRV_CTX_SIZE:-262144}"
@@ -80,12 +103,15 @@ die() { echo "error: $*" >&2; exit 1; }
 
 # gguf_meta MODEL_PATH -- print shell-evalable KV metadata (ARCH,
 # BLOCK_COUNT, CONTEXT_LENGTH, HEAD_COUNT_KV, KEY_LENGTH, VALUE_LENGTH) read
-# straight from the GGUF header via gguf-py (vendored in this repo at
-# gguf-py/) -- no model load, just the header. Empty output / non-zero exit
-# means introspection failed (no python3, no gguf-py, or an architecture
-# gguf-py doesn't recognize) -- callers must treat every field as unknown,
-# not 0, and fall back to the pre-existing (weights-only) behavior rather
-# than guessing.
+# straight from the GGUF header via gguf-py (vendored in the checkout at
+# gguf-py/ -- not part of RESOURCE_DIR's smaller release-only bundle, so
+# this only applies in checkout mode; PYTHONPATH pointing at a nonexistent
+# dir is harmless, python3 just won't find anything extra there) -- no
+# model load, just the header. Empty output / non-zero exit means
+# introspection failed (no python3, no gguf-py, or an architecture gguf-py
+# doesn't recognize) -- callers must treat every field as unknown, not 0,
+# and fall back to the pre-existing (weights-only) behavior rather than
+# guessing.
 gguf_meta() {
     command -v python3 >/dev/null 2>&1 || return 1
     PYTHONPATH="${REPODIR}/gguf-py" python3 - "$1" 2>/dev/null <<'PYEOF'
@@ -169,7 +195,7 @@ case "$MODEL_CHOICE" in
         MODEL_LABEL="$MODEL_ALIAS"
         chat_template_rel="$(jq -r '.chat_template_file // empty' <<<"$entry")"
         CHAT_TEMPLATE=""
-        [[ -n "$chat_template_rel" ]] && CHAT_TEMPLATE="${REPODIR}/${chat_template_rel}"
+        [[ -n "$chat_template_rel" ]] && CHAT_TEMPLATE="${DATA_DIR}/${chat_template_rel}"
         DEFAULT_PORT="$(jq -r '.port // 8091' <<<"$entry")"
 
         MODEL=""
