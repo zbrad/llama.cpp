@@ -48,7 +48,6 @@ REPODIR="/home/zbrad/gh/llama.cpp"
 LLAMA_SERVER="${REPODIR}/build/bin/llama-server"
 ALIASES_FILE="${REPODIR}/models/aliases.json"
 UNIT_DIR="${HOME}/.config/systemd/user"
-PORT="${NEMO_PORT:-8091}"
 HOST="${NEMO_HOST:-0.0.0.0}"
 CTX_SIZE="${NEMO_CTX_SIZE:-262144}"
 MEM_MARGIN_GIB="${NEMO_MEM_MARGIN_GIB:-8}"  # headroom above model size for KV cache + overhead
@@ -83,6 +82,7 @@ case "$MODEL_CHOICE" in
         CHAT_TEMPLATE=""
         MODEL_LABEL="$(basename "$MODEL_CHOICE")"
         MODEL_ALIAS="$MODEL_LABEL"
+        DEFAULT_PORT=8091
         ;;
     *)
         [[ -f "$ALIASES_FILE" ]] || die "alias table not found at $ALIASES_FILE"
@@ -95,6 +95,7 @@ case "$MODEL_CHOICE" in
         chat_template_rel="$(jq -r '.chat_template_file // empty' <<<"$entry")"
         CHAT_TEMPLATE=""
         [[ -n "$chat_template_rel" ]] && CHAT_TEMPLATE="${REPODIR}/${chat_template_rel}"
+        DEFAULT_PORT="$(jq -r '.port // 8091' <<<"$entry")"
 
         MODEL=""
         tried=()
@@ -110,6 +111,13 @@ case "$MODEL_CHOICE" in
         [[ -n "$MODEL" ]] || die "'$filename' (model '$MODEL_CHOICE') not found in any search_paths entry -- tried: ${tried[*]}"
         ;;
 esac
+
+# Each alias gets its own default port (models/aliases.json's "port" field)
+# so multiple models can run as parallel systemd --user services without
+# colliding; NEMO_PORT still wins as an explicit override; a bare
+# absolute-path invocation (no alias entry) falls back to 8091 (see
+# DEFAULT_PORT set in the case block above).
+PORT="${NEMO_PORT:-$DEFAULT_PORT}"
 
 # Tag the API-visible alias (not MODEL_LABEL -- that feeds the unit/file
 # names) when this script isn't running on PRIMARY_HOST, so a consumer like

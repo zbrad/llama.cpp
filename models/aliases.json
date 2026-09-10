@@ -1,7 +1,10 @@
 {
-    "_comment": "Known-model alias table for launcher scripts (e.g. nemo.sh). Not read by llama-server itself -- llama.cpp's own --models-preset/router mechanism is INI-only (see docs/preset.md). 'filename' is resolved by walking search_paths in order and taking the first match, so no machine-specific absolute path needs to live here. 'chat_template_file' (if set) is relative to this repo's root.",
+    "_comment": "Known-model alias table for launcher scripts (e.g. nemo.sh). Not read by llama-server itself -- llama.cpp's own --models-preset/router mechanism is INI-only (see docs/preset.md). 'filename' is resolved by walking search_paths in order and taking the first match, so no machine-specific absolute path needs to live here. 'chat_template_file' (if set) is relative to this repo's root. 'port' is nemo.sh's default listen port for this model (overridable via NEMO_PORT) -- each entry gets its own so multiple models can run as parallel systemd --user services without colliding.",
     "search_paths": [
         "~/models/nemotron3-gguf",
+        "~/models/qwen3-4b-gguf",
+        "~/models/nemotron-nano-4b-gguf",
+        "~/models/qwen3-30b-a3b-gguf",
         "~/models",
         "/opt/models",
         "/models"
@@ -10,12 +13,32 @@
         "super": {
             "filename": "Nemotron-3-Super-120B-A12B.gguf",
             "alias": "nemotron-3-super",
-            "chat_template_file": "models/templates/NVIDIA-Nemotron-3-Super-120B-A12B.jinja"
+            "chat_template_file": "models/templates/NVIDIA-Nemotron-3-Super-120B-A12B.jinja",
+            "port": 8091
         },
         "nano": {
             "filename": "Nemotron-3-Nano-30B-A3B-UD-Q8_K_XL.gguf",
             "alias": "nemotron-3-nano",
-            "chat_template_file": null
+            "chat_template_file": null,
+            "port": 8092
+        },
+        "qwen3-4b": {
+            "filename": "Qwen3-4B-Q8_0.gguf",
+            "alias": "qwen3-4b",
+            "chat_template_file": null,
+            "port": 8093
+        },
+        "nemotron-nano-4b": {
+            "filename": "Nemotron-3-Nano-4B-Q8_0.gguf",
+            "alias": "nemotron-nano-4b",
+            "chat_template_file": null,
+            "port": 8094
+        },
+        "qwen3-30b-a3b": {
+            "filename": "Qwen3-30B-A3B-Q4_K_M.gguf",
+            "alias": "qwen3-30b-a3b",
+            "chat_template_file": null,
+            "port": 8095
         }
     }
 }
