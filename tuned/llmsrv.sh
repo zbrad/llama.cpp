@@ -322,6 +322,15 @@ PORT="${LLMSRV_PORT:-$DEFAULT_PORT}"
 UNIT_NAME="llmsrv-${MODEL_LABEL}.service"
 UNIT_FILE="${UNIT_DIR}/${UNIT_NAME}"
 
+# STOP_MARKER — records a deliberate `llmsrv.sh stop` distinctly from a
+# crash/OOM-kill/wedge, so a human or an assistant investigating a missing
+# server later doesn't have to know to go check `systemctl --user is-failed`
+# (or worse, mistake a clean stop for the 2026-09-06 wedge incident and start
+# digging for a repeat of it). do_stop writes it; do_status surfaces it;
+# do_start clears it (a fresh start makes any prior stop reason moot).
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/llmsrv"
+STOP_MARKER="${STATE_DIR}/${UNIT_NAME}.stopped"
+
 # check_mem — refuse to start if there isn't enough free+reclaimable memory
 # to hold the model weights AND the KV cache at the (now-capped) CTX_SIZE,
 # plus a runtime-overhead margin, rather than letting it OOM (or thrash
@@ -422,8 +431,12 @@ do_status() {
         curl -s -m 3 "http://127.0.0.1:${PORT}/health" 2>&1 || echo "(health check failed -- still loading, or unreachable)"
     else
         echo "not running: ${MODEL_LABEL}"
-        systemctl --user is-failed --quiet "$UNIT_NAME" 2>/dev/null && \
-            echo "(unit ${UNIT_NAME} last exited with a failure -- see 'journalctl --user -u ${UNIT_NAME}')"
+        if [[ -f "$STOP_MARKER" ]]; then
+            echo "(known-good shutdown -- $(cat "$STOP_MARKER"))"
+        else
+            systemctl --user is-failed --quiet "$UNIT_NAME" 2>/dev/null && \
+                echo "(unit ${UNIT_NAME} last exited with a failure -- see 'journalctl --user -u ${UNIT_NAME}')"
+        fi
     fi
 }
 
@@ -431,6 +444,8 @@ do_stop() {
     if systemctl --user is-active --quiet "$UNIT_NAME"; then
         echo "stopping ${UNIT_NAME}..."
         systemctl --user stop "$UNIT_NAME"
+        mkdir -p "$STATE_DIR"
+        echo "stopped deliberately via 'llmsrv.sh stop' at $(date -u +%Y-%m-%dT%H:%M:%SZ) by ${USER:-unknown}" > "$STOP_MARKER"
         echo "stopped"
     else
         echo "not running"
@@ -493,6 +508,7 @@ do_start() {
     resolve_launch_config
     check_mem
 
+    rm -f "$STOP_MARKER"  # a fresh start makes any prior stop reason moot
     write_unit
     systemctl --user start "$UNIT_NAME"
 
