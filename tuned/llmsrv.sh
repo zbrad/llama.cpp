@@ -455,7 +455,7 @@ do_status() {
             echo "(known-good shutdown -- $(cat "$STOP_MARKER"))"
         else
             systemctl --user is-failed --quiet "$UNIT_NAME" 2>/dev/null && \
-                echo "(unit ${UNIT_NAME} last exited with a failure -- see 'journalctl --user -u ${UNIT_NAME}')"
+                echo "(unit ${UNIT_NAME} last exited with a failure -- see 'journalctl --user -u ${UNIT_NAME}')" || true
         fi
     fi
 }
