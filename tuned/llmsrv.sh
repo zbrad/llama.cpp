@@ -70,6 +70,26 @@
 # possibly-privileged step).
 set -euo pipefail
 
+# --- Loud failures ---------------------------------------------------------
+# Under set -e a failing command (e.g. a no-match grep in a $(...) under
+# pipefail) aborts with no output at all. This prints the failing command and
+# call stack instead. Same behavior as gpu_tuned_on_err in tuned-common
+# (tuned/common.sh); duplicated here rather than sourced because install.sh
+# ships llmsrv.sh on its own, with no tuned/common.sh beside it. Quiet when
+# errexit is inactive; commands guarded by ||, && or if never fire ERR.
+llmsrv_on_err() {
+    local rc="$1" cmd="$2" i
+    [[ $- == *e* ]] || return 0
+    {
+        echo "llmsrv.sh: ERROR: command failed (exit ${rc}): ${cmd}"
+        for (( i = 1; i < ${#BASH_SOURCE[@]}; i++ )); do
+            echo "llmsrv.sh:   at ${BASH_SOURCE[i]}:${BASH_LINENO[i-1]} (${FUNCNAME[i]:-main})"
+        done
+    } >&2
+}
+set -o errtrace
+trap 'llmsrv_on_err "$?" "${BASH_COMMAND}"' ERR
+
 # REPODIR self-locates from this script's own real path (resolving the
 # ~/.local/bin/llmsrv.sh symlink first) rather than a hardcoded checkout
 # path -- matches tuned/env.sh's/package.sh's own convention. DATA_DIR then
