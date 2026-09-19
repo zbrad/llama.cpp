@@ -3,9 +3,11 @@
 # "tuned-builds" fleet (pytorch, llama.cpp, flash-attention, flashinfer,
 # raft, cuvs, faiss, and downstream consumers like vllm/ComfyUI/open-webui).
 #
-# Source this file; it defines functions only (no side effects, no exports)
-# so it's safe to source before or after a repo's own tuned/env.sh sets its
-# device-specific vars. Every function takes its inputs as explicit
+# Source this file; it defines functions only (no exports) so it's safe to
+# source before or after a repo's own tuned/env.sh sets its device-specific
+# vars. The ONE intentional side effect is the loud-failure ERR trap
+# installed at the bottom of this file (see "Loud failures" there; opt out
+# with GPU_TUNED_NO_ERR_TRAP=1). Every function takes its inputs as explicit
 # arguments -- none of them read a repo-specific global var name (that's
 # the whole point: this file is meant to be byte-identical across every
 # consumer, so it's fetched/vendored, not hand-copied-and-edited).
@@ -213,24 +215,91 @@ gpu_tuned_verify_cccl_version() {
 # greps one constant name (see zbrad/raft's raft_wheel_common.sh, which
 # stamps both libraft and librmm into .raft_build_info regardless of
 # which package is being stamped).
+#
+# Always stamps the exact source commit (git rev-parse --short HEAD, run
+# from the caller's cwd -- every tuned/build.sh|wheel.sh invokes this from
+# REPO_ROOT) in addition to <version>, rather than trusting <version> to
+# carry it. It didn't always: some tuned-builds version schemes embed a
+# git sha in the version string itself (e.g. pytorch's old
+# BASE.dev<date>+git<sha>...), others (e.g. a plain semver, or a
+# tuning.<N> commit-count scheme) don't -- a caller passing one of the
+# latter used to leave the stamped binary itself with no way back to the
+# exact commit, unlike its GitHub release title. Auto-detecting here
+# means it can't be forgotten by a caller either way.
 gpu_tuned_embed_build_info() {
     local target="$1" variant="$2" package="$3" version="$4" hw_label="${5:-${2}}" repo_url="${6:-}" section_override="${7:-}"
-    local section tmp
+    local section tmp git_sha
     if [ -n "${section_override}" ]; then
         section="${section_override}"
         [[ "${section}" == .* ]] || section=".${section}"
     else
         section=".$(printf '%s' "${package}" | tr -c 'A-Za-z0-9' '_')_build_info"
     fi
+    git_sha="$(git rev-parse --short HEAD 2>/dev/null)" || git_sha="unknown"
     tmp="$(mktemp)"
     {
         printf '%s-%s build: %s v%s (%s)' "${package}" "${variant}" "${package}" "${version}" "${hw_label}"
         [ -n "${repo_url}" ] && printf ', %s' "${repo_url}"
+        printf ', commit %s' "${git_sha}"
         printf ', built %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     } > "${tmp}"
     objcopy --remove-section "${section}" "${target}" 2>/dev/null || true
     objcopy --add-section "${section}=${tmp}" "${target}"
     rm -f "${tmp}"
+}
+
+# gpu_tuned_verify_build_info <file> <package> <expected-version>
+# [section-override] — reads back the ELF section gpu_tuned_embed_build_info
+# stamped and confirms it exists and actually carries <expected-version>.
+# Exists because a stamp can be silently discarded downstream of where it
+# was applied: a packaging step (e.g. scikit-build-core's `python -m build
+# --wheel`) can run its own fresh install pass into a temp prefix sourced
+# from the build tree's own compiled output, never touching -- and
+# therefore never carrying forward -- whatever copy was stamped earlier.
+# Confirmed empirically for pytorch's wheel.sh: a test marker stamped on
+# the pre-build .so did not survive into the built wheel at all. Call this
+# on the FINAL shipped artifact (the built wheel's own contents, or the
+# installed file in a consuming venv), not just right after stamping a
+# pre-build copy -- checking only the latter would have reported success
+# in the exact case that was actually broken.
+#
+# <expected-version> is a substring match (the section's full message
+# includes package/variant/hw_label/commit/timestamp around it), so pass
+# just the version string, not the whole expected message. Commit sha is
+# deliberately not checked: a consumer generally knows the version it
+# asked for but not independently which commit that version maps to --
+# report the section's full content instead of gating on it.
+#
+# Hard-fails (non-zero, message to stderr) if the section is missing
+# entirely or present but doesn't mention <expected-version>; prints the
+# section's content and returns 0 on success.
+gpu_tuned_verify_build_info() {
+    local file="$1" package="$2" expected_version="$3" section_override="${4:-}"
+    local section
+    if [ -n "${section_override}" ]; then
+        section="${section_override}"
+        [[ "${section}" == .* ]] || section=".${section}"
+    else
+        section=".$(printf '%s' "${package}" | tr -c 'A-Za-z0-9' '_')_build_info"
+    fi
+    local tmp content
+    tmp="$(mktemp)"
+    if ! objcopy --dump-section "${section}=${tmp}" "${file}" 2>/dev/null; then
+        rm -f "${tmp}"
+        echo "ERROR: gpu_tuned_verify_build_info: ${file} has no ${section} section -- the build-info stamp did not survive into this artifact (a packaging/install step likely rebuilt or copied from an unstamped source)." >&2
+        return 1
+    fi
+    content="$(cat "${tmp}")"
+    rm -f "${tmp}"
+    if [[ -z "${content}" ]]; then
+        echo "ERROR: gpu_tuned_verify_build_info: ${file}'s ${section} section is empty." >&2
+        return 1
+    fi
+    if [[ "${content}" != *"${expected_version}"* ]]; then
+        echo "ERROR: gpu_tuned_verify_build_info: ${file}'s ${section} section ('${content}') does not mention expected version '${expected_version}' -- wrong/stale binary shipped." >&2
+        return 1
+    fi
+    echo "OK: ${file}'s ${section} section: ${content}"
 }
 
 # gpu_tuned_protect_torch_pin <venv-dir> <exact-torch-version> — guards a
@@ -365,3 +434,177 @@ gpu_tuned_publish_release() {
     fi
     echo "OK: published ${repo}@${tag} -- https://github.com/${repo}/releases/tag/${tag}"
 }
+
+# gpu_tuned_verify_venv <venv-dir> <repo-root> — sanity-checks an existing
+# venv before build.sh/wheel.sh reuse it, instead of silently building on
+# top of corruption. Catches two concrete failure modes hit in practice: a
+# venv effectively copied from another repo (bin/pip's shebang -- an
+# absolute path baked in at creation by both `python3 -m venv` and `uv
+# venv` alike -- resolves outside this venv entirely), and a stray
+# <repo-root>/*.egg-info or build/**/CMakeCache.txt left pointing at a
+# different repo, either of which silently shadows/misdirects a real
+# build. Does not check pyvenv.cfg's `command=` key -- `uv venv` doesn't
+# write one, only `python3 -m venv` does.
+gpu_tuned_verify_venv() {
+    local venv_dir="$1" repo_root="$2"
+    local pip_shebang
+    pip_shebang="$(head -1 "${venv_dir}/bin/pip" 2>/dev/null | sed -n 's/^#!//p')"
+    if [[ -z "${pip_shebang}" || "${pip_shebang}" != "${venv_dir}"/* ]]; then
+        echo "ERROR: gpu_tuned_verify_venv: ${venv_dir}/bin/pip's shebang ('${pip_shebang:-<unreadable>}') does not resolve inside ${venv_dir} -- this venv looks copied from another repo. Delete and rebuild: rm -rf ${venv_dir}" >&2
+        return 1
+    fi
+
+    # <pkg>.egg-info at repo root is a normal, expected artifact -- both
+    # `pip install -e .` and `python3 -m build` (re)write one as part of
+    # every build in this fleet, which is why it's gitignored everywhere.
+    # Its mere presence isn't a problem; only STALE content is: if it's
+    # left over from an install into some other/since-deleted venv, its
+    # version can silently shadow the real one for anything resolving
+    # importlib.metadata from repo_root's cwd. Compare against what's
+    # actually installed in *this* venv and fail only on a mismatch.
+    local egg_dir pkg_name egg_version installed_version
+    for egg_dir in "${repo_root}"/*.egg-info; do
+        [[ -d "${egg_dir}" ]] || continue
+        pkg_name="$(basename "${egg_dir}" .egg-info)"
+        egg_version="$(sed -n 's/^Version: //p' "${egg_dir}/PKG-INFO" 2>/dev/null | head -1)"
+        installed_version="$("${venv_dir}/bin/pip" show "${pkg_name}" 2>/dev/null | sed -n 's/^Version: //p')"
+        if [[ -n "${egg_version}" && -n "${installed_version}" && "${egg_version}" != "${installed_version}" ]]; then
+            echo "ERROR: gpu_tuned_verify_venv: ${egg_dir}/PKG-INFO's Version (${egg_version}) does not match ${venv_dir}'s installed ${pkg_name} (${installed_version}) -- stale metadata, likely left over from a different/deleted venv. Delete it: rm -rf ${egg_dir}" >&2
+            return 1
+        fi
+    done
+
+    local cmake_cache cached_home
+    while IFS= read -r cmake_cache; do
+        cached_home="$(sed -n 's/^CMAKE_HOME_DIRECTORY:INTERNAL=//p' "${cmake_cache}")"
+        if [[ -n "${cached_home}" && "${cached_home}" != "${repo_root}" ]]; then
+            echo "ERROR: gpu_tuned_verify_venv: ${cmake_cache}'s CMAKE_HOME_DIRECTORY (${cached_home}) does not match this repo (${repo_root}) -- this build/ dir looks copied from another repo. Delete it: rm -rf ${repo_root}/build" >&2
+            return 1
+        fi
+    done < <(find "${repo_root}/build" -name 'CMakeCache.txt' 2>/dev/null)
+
+    return 0
+}
+
+# gpu_tuned_audit_pinned <pip-cmd> <pkg>=<expected-local-tag> [...] —
+# prints each package's installed version, and WARNs (not fatal -- callers
+# decide whether to treat it as an error) if a tuned build's local-version
+# tag isn't present in what's actually installed, e.g. an untuned
+# torch/flashinfer wheel silently shadowing the tuned one via a later,
+# unrelated pip install. <pip-cmd> is the pip to inspect -- a venv's
+# bin/pip, or `python3 -m pip --user` for flashinfer's shared ~/.local.
+#
+# `|| true` on the `pip show` pipeline: pip show exits 1 for a package
+# that isn't installed -- a normal, expected outcome here (the
+# "not installed" branch below), not a real error -- but every caller in
+# this fleet runs under `set -o pipefail`, which would otherwise propagate
+# that exit 1 out of the pipe-to-sed and abort the whole calling script.
+# Confirmed the hard way: flashinfer's build.sh died silently, mid-audit,
+# on exactly this the first time it ran flashinfer-cubin (correctly, not
+# installed) through gpu_tuned_audit_stray below.
+gpu_tuned_audit_pinned() {
+    local pip_cmd="$1"
+    shift
+    local spec pkg tag installed
+    for spec in "$@"; do
+        pkg="${spec%%=*}"
+        tag="${spec#*=}"
+        installed="$(${pip_cmd} show "${pkg}" 2>/dev/null | sed -n 's/^Version: //p' || true)"
+        if [[ -z "${installed}" ]]; then
+            echo "  ${pkg}: not installed"
+        elif [[ "${installed}" != *"${tag}"* ]]; then
+            echo "WARNING: gpu_tuned_audit_pinned: ${pkg} ${installed} does not carry expected tag '${tag}' -- a non-tuned build may have silently replaced it." >&2
+        else
+            echo "  ${pkg}: ${installed} (OK)"
+        fi
+    done
+}
+
+# gpu_tuned_audit_stray <pip-cmd> <pkg> [...] — WARNs (not fatal) if any of
+# the named packages are installed at all. For packages known to cause
+# trouble just by being present, not because of a version conflict, but
+# because they aren't part of this fleet's actual dependency chain and can
+# trip an unrelated runtime version check (see: flashinfer-cubin).
+gpu_tuned_audit_stray() {
+    local pip_cmd="$1"
+    shift
+    local pkg installed
+    for pkg in "$@"; do
+        installed="$(${pip_cmd} show "${pkg}" 2>/dev/null | sed -n 's/^Version: //p' || true)"
+        if [[ -n "${installed}" ]]; then
+            echo "WARNING: gpu_tuned_audit_stray: ${pkg} ${installed} is installed but isn't part of this fleet's dependency chain -- consider: ${pip_cmd} uninstall ${pkg}" >&2
+        fi
+    done
+    return 0
+}
+
+# gpu_tuned_local_version <variant> <cuda-compact> <tuning-count> -- prints
+# the canonical PEP 440 local-version label for a tuned wheel:
+#   <variant>.cu<cuda-compact>.tuning.<count>     e.g. gb10.cu134.tuning.34
+# This is the ONE place that format is defined; every wheel script calls it
+# rather than hand-building the string. Rules enforced (see
+# docs/VERSIONING.md for the reasoning and sources):
+#   - dot-separated, lowercase alphanumerics only. PEP 440 normalizes "-"
+#     and "_" to "." and lowercases, so any other form makes the wheel
+#     filename differ from the string we built (tags/titles then disagree).
+#   - the counter is its own PURELY NUMERIC segment ("tuning.34", not
+#     "tuning.v34" / "tuned34"): numeric segments compare as integers, a
+#     fused letter+digit segment compares as text (v100 sorts below v9).
+#   - the counter is canonical decimal (no leading zeros): PEP 440
+#     normalizes numeric segments, so "007" becomes "7" and a filename
+#     containing "007" no longer matches its own metadata (real-world
+#     failure: NVIDIA's Jetson torch wheels with "nv24.08", rejected by uv).
+# Errors (return 1, message on stderr) rather than emitting a bad label.
+gpu_tuned_local_version() {
+    local variant="${1:-}" cuda="${2:-}" count="${3:-}"
+    if [[ ! "${variant}" =~ ^[a-z][a-z0-9]*$ ]]; then
+        echo "ERROR: gpu_tuned_local_version: variant '${variant}' must be lowercase alphanumeric (e.g. gb10)." >&2
+        return 1
+    fi
+    if [[ ! "${cuda}" =~ ^[0-9]+$ ]]; then
+        echo "ERROR: gpu_tuned_local_version: cuda-compact '${cuda}' must be digits only (e.g. 134 for CUDA 13.4)." >&2
+        return 1
+    fi
+    if [[ ! "${count}" =~ ^(0|[1-9][0-9]*)$ ]]; then
+        echo "ERROR: gpu_tuned_local_version: tuning count '${count}' must be a canonical decimal integer (no leading zeros, no letters): PEP 440 normalizes numeric segments, so a padded count would not match its own wheel filename. See docs/VERSIONING.md." >&2
+        return 1
+    fi
+    echo "${variant}.cu${cuda}.tuning.${count}"
+}
+
+# gpu_tuned_tuning_label <version-string> -- prints the "tuning.<N>" part of
+# a tuned version (e.g. "0.7.0+gb10.cu134.tuning.149" -> "tuning.149"), or
+# nothing (still exit 0) if the version doesn't carry one -- e.g. a wheel
+# built before the marker existed, or the legacy "tuning.v<N>" form
+# (see docs/VERSIONING.md, "Backfill"). Never fails: callers run under
+# `set -o pipefail`, where a no-match grep would otherwise abort them.
+gpu_tuned_tuning_label() {
+    printf '%s' "${1:-}" | grep -oE 'tuning\.[0-9]+' | head -1 || true
+}
+
+# --- Loud failures ---------------------------------------------------------
+# Every consumer script runs under `set -euo pipefail`, where a failing
+# command -- notably a no-match grep inside a $(...) assignment -- aborts the
+# script with NO output at all. That has bitten this fleet repeatedly
+# (release.sh's tuning-label grep, audit_pinned/audit_stray, venv checks).
+# Sourcing this file installs an ERR trap so an abort always says which
+# command failed, where, and from what call stack. Quiet by design when
+# errexit is not active (a `set +e` region, or a command whose failure the
+# caller handles with `||`/`if`, never fires an ERR trap in the first
+# place). Opt out with GPU_TUNED_NO_ERR_TRAP=1; an ERR trap the script
+# already installed itself is left alone.
+gpu_tuned_on_err() {
+    local rc="$1" cmd="$2" i
+    [[ $- == *e* ]] || return 0
+    {
+        echo "[tuned] ERROR: command failed (exit ${rc}): ${cmd}"
+        for (( i = 1; i < ${#BASH_SOURCE[@]}; i++ )); do
+            echo "[tuned]   at ${BASH_SOURCE[i]}:${BASH_LINENO[i-1]} (${FUNCNAME[i]:-main})"
+        done
+    } >&2
+}
+
+if [[ -z "${GPU_TUNED_NO_ERR_TRAP:-}" && -z "$(trap -p ERR)" ]]; then
+    set -o errtrace
+    trap 'gpu_tuned_on_err "$?" "${BASH_COMMAND}"' ERR
+fi
