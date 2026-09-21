@@ -1,6 +1,10 @@
 {
     "_comment": "Known-model alias table for launcher scripts (e.g. nemo.sh). Not read by llama-server itself -- llama.cpp's own --models-preset/router mechanism is INI-only (see docs/preset.md). 'filename' is resolved by walking search_paths in order and taking the first match, so no machine-specific absolute path needs to live here. 'chat_template_file' (if set) is relative to this repo's root. 'port' is nemo.sh's default listen port for this model (overridable via NEMO_PORT) -- each entry gets its own so multiple models can run as parallel systemd --user services without colliding.",
     "search_paths": [
+        "~/workspace/models/llama.cpp/nemotron3-gguf",
+        "~/workspace/models/llama.cpp/qwen3-4b-gguf",
+        "~/workspace/models/llama.cpp/nemotron-nano-4b-gguf",
+        "~/workspace/models/llama.cpp/qwen3-30b-a3b-gguf",
         "~/models/nemotron3-gguf",
         "~/models/qwen3-4b-gguf",
         "~/models/nemotron-nano-4b-gguf",
