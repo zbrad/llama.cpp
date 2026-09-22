@@ -433,6 +433,9 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=$(dirname "$LLAMA_SERVER")
+# "-" prefix: a redirector/Postgres outage must never block start/stop of the real server.
+ExecStartPre=-/home/zbrad/gh/redirector/hooks/register.sh register --name "${MODEL_ALIAS}" --slug "${MODEL_LABEL}" --description "LLM (llama.cpp)" --url "http://$(hostname):${PORT}"
+ExecStopPost=-/home/zbrad/gh/redirector/hooks/register.sh deregister --slug "${MODEL_LABEL}"
 ExecStart=${LLAMA_SERVER} --model ${MODEL} --alias "${MODEL_ALIAS}" ${EXTRA_LLAMA_ARGS[@]} --ctx-size ${CTX_SIZE} --n-gpu-layers 99 --load-mode none --threads 8 --temp 1.0 --top-p 0.95 --min-p 0.01 --reasoning-preserve --host ${HOST} --port ${PORT}
 Restart=on-failure
 RestartSec=5
