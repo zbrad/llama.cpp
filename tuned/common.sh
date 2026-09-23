@@ -226,6 +226,13 @@ gpu_tuned_verify_cccl_version() {
 # latter used to leave the stamped binary itself with no way back to the
 # exact commit, unlike its GitHub release title. Auto-detecting here
 # means it can't be forgotten by a caller either way.
+#
+# Optional GPU_TUNED_BUILD_INFO_DEPS (env var, single line): what this
+# artifact bundles or was built against, appended as ", deps <text>" so it
+# is readable from the binary itself (e.g. "kvikio 26.12.00, raft
+# v26.12-gb10-cu134-g9d97792e"). Unset, the stamp is unchanged. An env var
+# rather than an 8th argument so the per-repo embed_build_info wrappers need
+# no change.
 gpu_tuned_embed_build_info() {
     local target="$1" variant="$2" package="$3" version="$4" hw_label="${5:-${2}}" repo_url="${6:-}" section_override="${7:-}"
     local section tmp git_sha
@@ -241,6 +248,7 @@ gpu_tuned_embed_build_info() {
         printf '%s-%s build: %s v%s (%s)' "${package}" "${variant}" "${package}" "${version}" "${hw_label}"
         [ -n "${repo_url}" ] && printf ', %s' "${repo_url}"
         printf ', commit %s' "${git_sha}"
+        [ -n "${GPU_TUNED_BUILD_INFO_DEPS:-}" ] && printf ', deps %s' "${GPU_TUNED_BUILD_INFO_DEPS//$'\n'/ }"
         printf ', built %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     } > "${tmp}"
     objcopy --remove-section "${section}" "${target}" 2>/dev/null || true
@@ -302,17 +310,39 @@ gpu_tuned_verify_build_info() {
     echo "OK: ${file}'s ${section} section: ${content}"
 }
 
-# gpu_tuned_protect_torch_pin <venv-dir> <exact-torch-version> — guards a
+# gpu_tuned_protect_torch_pin <venv-dir> [<exact-torch-version>] — guards a
 # venv's tuned (non-PyPI) torch install against being silently swapped out
 # by a companion package's exact torch pin (e.g. `pip install torchvision`
 # hard-pins torch==2.13.0 and, without this, pip's resolver just
 # uninstalls whatever tuned build is there and installs that instead --
-# no warning). Writes <venv-dir>/../constraints-gb10.txt (one line: the
-# pinned torch version) and <venv-dir>/pip.conf (constraint= pointing at
-# it) -- pip reads {sys.prefix}/pip.conf automatically for any
-# venv-prefixed `pip`/`python -m pip` invocation, no activation needed.
-# Idempotent: safe to call again after rebuilding/reinstalling the tuned
-# torch wheel with its new version string.
+# no warning). <exact-torch-version> is read directly from the venv
+# itself (`<venv-dir>/bin/python -c 'import torch; print(torch.__version__)'`)
+# when omitted; pass it explicitly only to override.
+#
+# Deriving the version from the venv, rather than requiring the caller to
+# type or copy it in, is deliberate: a hand-typed/copy-pasted version
+# string from a DIFFERENT repo or session is exactly how zbrad/ComfyUI's
+# constraints-gb10.txt ended up pinning a torch build
+# (2.15.0+gb10.cu133.tuning.v29) that was never actually installed there
+# -- the real install stayed at
+# 2.14.0.dev20260707+gitc36325c5ba.gb10.cu133, so the guard was silently
+# protecting the wrong version (confirmed 2026-09-22; see that repo's
+# tuned_torch_venv_pip_constraint.md).
+#
+# The GPU codename (variant) is likewise extracted from the version
+# string itself -- the first "<variant>.cu<digits>" match (e.g. "gb10" in
+# "0.7.0+gb10.cu134.tuning.35", or in the legacy dev form
+# "2.14.0.dev20260707+gitc36325c5ba.gb10.cu133") -- and used to name the
+# constraints file (constraints-<variant>.txt) instead of the old
+# hardcoded "constraints-gb10.txt", which was wrong for any rtx40/rtx50
+# venv this ran against. Fails loudly, rather than defaulting to "gb10",
+# if no variant marker is found.
+#
+# Writes <venv-dir>/../constraints-<variant>.txt (one line: the pinned
+# torch version) and <venv-dir>/pip.conf (constraint= pointing at it) --
+# pip reads {sys.prefix}/pip.conf automatically for any venv-prefixed
+# `pip`/`python -m pip` invocation, no activation needed. Idempotent:
+# safe to call again after rebuilding/reinstalling the tuned torch wheel.
 #
 # Effect once wired in: a future `pip install torchvision` (or anything
 # else that hard-pins torch) fails loudly with a ResolutionImpossible
@@ -322,28 +352,50 @@ gpu_tuned_verify_build_info() {
 # a CUDA tensor, not just import -- see zbrad/ComfyUI project memory
 # for the torchvision/torchaudio compatibility checks done this way).
 gpu_tuned_protect_torch_pin() {
-    local venv_dir="$1" torch_version="$2"
-    if [[ -z "${venv_dir}" || -z "${torch_version}" ]]; then
-        echo "ERROR: gpu_tuned_protect_torch_pin: usage: gpu_tuned_protect_torch_pin <venv-dir> <exact-torch-version>" >&2
+    local venv_dir="$1" torch_version="${2:-}"
+    if [[ -z "${venv_dir}" ]]; then
+        echo "ERROR: gpu_tuned_protect_torch_pin: usage: gpu_tuned_protect_torch_pin <venv-dir> [<exact-torch-version>]" >&2
         return 1
     fi
     if [[ ! -d "${venv_dir}" ]]; then
         echo "ERROR: gpu_tuned_protect_torch_pin: no such venv dir: ${venv_dir}" >&2
         return 1
     fi
+    if [[ -z "${torch_version}" ]]; then
+        local py="${venv_dir}/bin/python"
+        if [[ ! -x "${py}" ]]; then
+            echo "ERROR: gpu_tuned_protect_torch_pin: no python at ${py}" >&2
+            return 1
+        fi
+        torch_version="$("${py}" -c 'import torch; print(torch.__version__)' 2>/dev/null)" || true
+        if [[ -z "${torch_version}" ]]; then
+            echo "ERROR: gpu_tuned_protect_torch_pin: '${py} -c \"import torch\"' produced no version -- is torch installed in ${venv_dir}?" >&2
+            return 1
+        fi
+    fi
+
+    local variant
+    variant="$(grep -oE '[a-z][a-z0-9]*\.cu[0-9]+' <<< "${torch_version}" | head -1 | sed -E 's/\.cu[0-9]+$//')" || true
+    if [[ -z "${variant}" ]]; then
+        echo "ERROR: gpu_tuned_protect_torch_pin: no '<variant>.cu<digits>' marker found in '${torch_version}' -- not a tuned build?" >&2
+        return 1
+    fi
+
     local repo_dir constraints_file
     repo_dir="$(cd "${venv_dir}/.." && pwd)"
-    constraints_file="${repo_dir}/constraints-gb10.txt"
+    constraints_file="${repo_dir}/constraints-${variant}.txt"
 
     cat > "${constraints_file}" <<EOF
-# Pins the GB10-tuned torch build so any future \`pip install\` in this venv
-# is forced to keep it -- without this, pip's resolver treats an exact
-# torch pin from a dependency (e.g. torchvision/torchaudio hard-pinning a
-# specific torch version) as authoritative and silently uninstalls the
-# tuned build in favor of a generic PyPI one. Wired in via
+# Pins the ${variant}-tuned torch build so any future \`pip install\` in
+# this venv is forced to keep it -- without this, pip's resolver treats
+# an exact torch pin from a dependency (e.g. torchvision/torchaudio
+# hard-pinning a specific torch version) as authoritative and silently
+# uninstalls the tuned build in favor of a generic PyPI one. Wired in via
 # <venv>/pip.conf's [install] constraint=. Generated by
-# gpu_tuned_protect_torch_pin (zbrad/tuned-common) -- rerun it whenever
-# the tuned torch wheel is rebuilt/reinstalled to refresh this pin.
+# gpu_tuned_protect_torch_pin (zbrad/tuned-common), which reads this
+# version directly from the venv's own \`torch.__version__\` -- rerun it
+# whenever the tuned torch wheel is rebuilt/reinstalled to refresh this
+# pin, rather than hand-editing the version string below.
 torch==${torch_version}
 EOF
 
@@ -370,6 +422,63 @@ gpu_tuned_short_ver() {
         return 1
     fi
     echo "${short}"
+}
+
+# gpu_tuned_cuda_subdir <base-dir> <cuda-tag> [<variant>] — prints
+# <base-dir>/<cuda-tag>[/<variant>], the CUDA-version-specific form of a
+# per-repo output directory, so builds against two CUDA toolkits never share
+# one (a shared build dir carries the other toolkit's CMake cache, a shared
+# staging or dist dir gets overwritten or deleted by the other toolkit's
+# run, and a shared test log lets one toolkit's results satisfy the other's
+# publish gate). <cuda-tag> is the "cu133" form; <variant> is optional.
+# Fails (exit 1, message on stderr) on a malformed tag or variant.
+gpu_tuned_cuda_subdir() {
+    local base="$1" cuda_tag="$2" variant="${3:-}"
+    if [[ -z "${base}" ]]; then
+        echo "ERROR: gpu_tuned_cuda_subdir: base dir is empty." >&2
+        return 1
+    fi
+    if [[ ! "${cuda_tag}" =~ ^cu[0-9]{3,4}$ ]]; then
+        echo "ERROR: gpu_tuned_cuda_subdir: cuda tag '${cuda_tag}' is not of the form cu<digits> (e.g. cu133)." >&2
+        return 1
+    fi
+    if [[ -z "${variant}" ]]; then
+        echo "${base}/${cuda_tag}"
+    elif [[ "${variant}" =~ ^[a-z0-9_-]+$ ]]; then
+        echo "${base}/${cuda_tag}/${variant}"
+    else
+        echo "ERROR: gpu_tuned_cuda_subdir: variant '${variant}' is malformed." >&2
+        return 1
+    fi
+}
+
+# gpu_tuned_out_dir <kind> <repo-root> <cuda-tag> [<variant>] — the
+# CUDA-version-specific output directory for <kind> in the raft/cuvs layout:
+#   build    -> <repo-root>/cpp/build/<cuda-tag>/<variant>
+#   dist     -> <repo-root>/dist/<cuda-tag>/<variant>   (variant may be "shared")
+#   releases -> <repo-root>/tuned/releases/<cuda-tag>   (variant not used)
+# Repos with a different layout (faiss) call gpu_tuned_cuda_subdir directly.
+# Fails on an unknown kind, or a missing variant for build/dist.
+gpu_tuned_out_dir() {
+    local kind="$1" root="$2" cuda_tag="$3" variant="${4:-}"
+    case "${kind}" in
+        build|dist)
+            if [[ -z "${variant}" ]]; then
+                echo "ERROR: gpu_tuned_out_dir: '${kind}' needs a variant (got '${variant}')." >&2
+                return 1
+            fi
+            if [[ "${kind}" == "build" ]]; then
+                gpu_tuned_cuda_subdir "${root}/cpp/build" "${cuda_tag}" "${variant}"
+            else
+                gpu_tuned_cuda_subdir "${root}/dist" "${cuda_tag}" "${variant}"
+            fi
+            ;;
+        releases) gpu_tuned_cuda_subdir "${root}/tuned/releases" "${cuda_tag}" ;;
+        *)
+            echo "ERROR: gpu_tuned_out_dir: unknown kind '${kind}' (expected build, dist or releases)." >&2
+            return 1
+            ;;
+    esac
 }
 
 # gpu_tuned_wheel_version <wheel-path> <pkg-name-prefix> — extracts the
