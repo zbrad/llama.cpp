@@ -1,5 +1,5 @@
 {
-    "_comment": "Known-model alias table for launcher scripts (e.g. nemo.sh). Not read by llama-server itself -- llama.cpp's own --models-preset/router mechanism is INI-only (see docs/preset.md). 'filename' is resolved by walking search_paths in order and taking the first match, so no machine-specific absolute path needs to live here. llmsrv.sh searches LLMSRV_MODEL_PATHS (colon-separated) and models/search_paths.local (per-machine, gitignored, one path per line) before these. 'chat_template_file' (if set) is relative to this repo's root. 'port' is nemo.sh's default listen port for this model (overridable via NEMO_PORT) -- each entry gets its own so multiple models can run as parallel systemd --user services without colliding.",
+    "_comment": "Known-model alias table for launcher scripts (e.g. nemo.sh). Not read by llama-server itself -- llama.cpp's own --models-preset/router mechanism is INI-only (see docs/preset.md). 'filename' is resolved by walking search_paths in order and taking the first match, so no machine-specific absolute path needs to live here. llmsrv.sh searches LLMSRV_MODEL_PATHS (colon-separated) and models/search_paths.local (per-machine, gitignored, one path per line) before these. 'chat_template_file' (if set) is relative to this repo's root. 'port' is nemo.sh's default listen port for this model (overridable via NEMO_PORT) -- each entry gets its own so multiple models can run as parallel systemd --user services without colliding. Optional 'hf_repo' (org/name of the Hugging Face repo the file came from) makes llmsrv.sh check the HF hub cache for it before any directory.",
     "search_paths": [
         "~/workspace/models/llama.cpp/nemotron3-gguf",
         "~/workspace/models/llama.cpp/qwen3-4b-gguf",
@@ -20,18 +20,21 @@
     "models": {
         "super": {
             "filename": "NVIDIA-Nemotron-3-Super-120B-A12B-UD-Q4_K_XL-00001-of-00003.gguf",
+            "hf_repo": "unsloth/NVIDIA-Nemotron-3-Super-120B-A12B-GGUF",
             "alias": "nemotron-3-super",
             "chat_template_file": "models/templates/NVIDIA-Nemotron-3-Super-120B-A12B.jinja",
             "port": 8091
         },
         "nano": {
             "filename": "Nemotron-3-Nano-30B-A3B-UD-Q8_K_XL.gguf",
+            "hf_repo": "unsloth/Nemotron-3-Nano-30B-A3B-GGUF",
             "alias": "nemotron-3-nano",
             "chat_template_file": null,
             "port": 8092
         },
         "qwen3-4b": {
             "filename": "Qwen3-4B-Q8_0.gguf",
+            "hf_repo": "Qwen/Qwen3-4B-GGUF",
             "alias": "qwen3-4b",
             "chat_template_file": null,
             "port": 8093
@@ -50,12 +53,14 @@
         },
         "mimo-9b": {
             "filename": "MiMo-V2.6-Distill-Qwen-9B-Q8_0.gguf",
+            "hf_repo": "ggml-org/MiMo-V2.6-Distill-Qwen-9B-GGUF",
             "alias": "mimo-v2.6-distill-qwen-9b",
             "chat_template_file": null,
             "port": 8096
         },
         "lightning": {
             "filename": "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MXFP4_MOE.gguf",
+            "hf_repo": "unsloth/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF",
             "alias": "nemotron-3.5-lightning-30b-a3b",
             "chat_template_file": null,
             "port": 8097
