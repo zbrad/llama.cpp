@@ -11,6 +11,9 @@
 #   curl -fsSL .../install.sh | bash -s -- --dir .
 #   # skip the post-install tiny-model completion test:
 #   curl -fsSL .../install.sh | bash -s -- --skip-smoke-test
+#   # tell llmsrv.sh where this machine keeps its GGUFs (both repeatable /
+#   # optional; written to <dir>/models/search_paths.local):
+#   curl -fsSL .../install.sh | bash -s -- --models-dir /data/gguf --hf-cache /data/hf/hub
 #   # or, from a checkout:
 #   bash install.sh [--dir <path>]
 #
@@ -41,6 +44,15 @@
 #   LLAMA_CPP_VARIANT/LLAMA_CPP_CUDA_VERSION/LLAMA_CPP_TAG  (GPU release matching)
 #   REPO_REF                    tag/commit to fetch aliases.json/llmsrv.sh/
 #                                this script's own updates from (default: see below)
+#   HF_HUB_CACHE                default for --hf-cache (a Hugging Face hub cache,
+#                                the directory holding models--<org>--<name>/)
+#
+# --models-dir <path> (repeatable) adds a directory llmsrv.sh searches for
+# GGUF files; --hf-cache <path> adds a Hugging Face hub cache, searched for
+# aliases.json entries that name an "hf_repo". Both are written to
+# <dir>/models/search_paths.local (one path per line, "hf:" before a cache),
+# which llmsrv.sh reads before aliases.json's own search_paths. Given
+# neither (and no HF_HUB_CACHE), an existing file is left as it is.
 set -euo pipefail
 
 REPO="zbrad/llama.cpp"
@@ -54,6 +66,8 @@ VARIANT="${LLAMA_CPP_VARIANT:-}"
 CUDA_VERSION="${LLAMA_CPP_CUDA_VERSION:-}"
 EXACT_TAG="${LLAMA_CPP_TAG:-}"
 SKIP_SMOKE_TEST=false
+MODELS_DIRS=()
+HF_CACHE="${HF_HUB_CACHE:-}"
 SMOKE_MODEL_URL="https://huggingface.co/ggml-org/test-model-stories260K/resolve/main/stories260K-f32.gguf"
 
 while [[ $# -gt 0 ]]; do
@@ -61,6 +75,10 @@ while [[ $# -gt 0 ]]; do
         --dir)     INSTALL_DIR="$2"; IS_DEFAULT_DIR=false; shift 2 ;;
         --dir=*)   INSTALL_DIR="${1#--dir=}"; IS_DEFAULT_DIR=false; shift ;;
         --skip-smoke-test) SKIP_SMOKE_TEST=true; shift ;;
+        --models-dir)   MODELS_DIRS+=("$2"); shift 2 ;;
+        --models-dir=*) MODELS_DIRS+=("${1#--models-dir=}"); shift ;;
+        --hf-cache)     HF_CACHE="$2"; shift 2 ;;
+        --hf-cache=*)   HF_CACHE="${1#--hf-cache=}"; shift ;;
         *) echo "ERROR: unknown argument: $1" >&2; exit 1 ;;
     esac
 done
@@ -267,6 +285,40 @@ while IFS= read -r rel; do
 done <<<"$templates"
 status "aliases.json + ${copied} referenced template(s) fetched"
 
+# --- Write models/search_paths.local from --models-dir/--hf-cache ---
+SEARCH_PATHS_LOCAL="$INSTALL_DIR/models/search_paths.local"
+search_paths_note=""
+if [ "${#MODELS_DIRS[@]}" -gt 0 ] || [ -n "$HF_CACHE" ]; then
+    new_paths="$WORK_DIR/search_paths.local"
+    {
+        echo "# Written by install.sh. One GGUF directory per line; \"hf:<path>\" is a"
+        echo "# Hugging Face hub cache. Read by llmsrv.sh before aliases.json's search_paths."
+        for d in "${MODELS_DIRS[@]}"; do
+            realpath -m "${d/#\~/$HOME}"
+        done
+        if [ -n "$HF_CACHE" ]; then
+            echo "hf:$(realpath -m "${HF_CACHE/#\~/$HOME}")"
+        fi
+    } > "$new_paths"
+    while IFS= read -r p; do
+        case "$p" in "#"*) continue ;; esac
+        [ -d "${p#hf:}" ] || status "WARNING: ${p#hf:} does not exist (yet)"
+    done < "$new_paths"
+    if [ ! -e "$SEARCH_PATHS_LOCAL" ]; then
+        cp "$new_paths" "$SEARCH_PATHS_LOCAL"
+        search_paths_note="written"
+    elif cmp -s "$new_paths" "$SEARCH_PATHS_LOCAL"; then
+        search_paths_note="unchanged"
+    else
+        backup="${SEARCH_PATHS_LOCAL}.bak.$(date +%Y%m%d%H%M%S)"
+        cp -p "$SEARCH_PATHS_LOCAL" "$backup"
+        cp "$new_paths" "$SEARCH_PATHS_LOCAL"
+        search_paths_note="replaced (previous version saved as $backup)"
+    fi
+elif [ -e "$SEARCH_PATHS_LOCAL" ]; then
+    search_paths_note="kept existing file (no --models-dir/--hf-cache given)"
+fi
+
 # --- Fetch llmsrv.sh itself ---
 status "Fetching llmsrv.sh..."
 curl -fsSL "${RAW_BASE}/tuned/llmsrv.sh" -o "$INSTALL_DIR/llmsrv.sh"
@@ -274,6 +326,10 @@ chmod +x "$INSTALL_DIR/llmsrv.sh"
 
 echo ""
 status "Installed to ${INSTALL_DIR}"
+if [ -n "$search_paths_note" ]; then
+    status "Model search paths, ${SEARCH_PATHS_LOCAL}: ${search_paths_note}"
+    grep -v '^#' "$SEARCH_PATHS_LOCAL" | sed 's/^/    /' >&2 || true
+fi
 if $IS_DEFAULT_DIR; then
     BIN_DIR="${HOME}/.local/bin"
     mkdir -p "$BIN_DIR"
