@@ -208,7 +208,8 @@ set -- "${ARGS[@]}"
 # newest snapshot first by mtime, either at the snapshot root or one
 # subfolder down (unsloth keeps each quant in its own folder). A split
 # GGUF (-00001-of-0000N) only counts if every part sits beside it in the
-# same snapshot. Sets MODEL on a match; appends what it checked to tried.
+# same snapshot. Sets MODEL/MODEL_SOURCE on a match; appends what it
+# checked to tried, and incomplete candidates it passed over to skipped.
 hf_lookup() {
     local cache="$1" repo="$2" filename="$3"
     local repo_dir snaps snap cand prefix total n i part missing
@@ -236,9 +237,11 @@ hf_lookup() {
             fi
             if [[ "${#missing[@]}" -gt 0 ]]; then
                 tried+=("${cand} (incomplete, missing: ${missing[*]})")
+                skipped+=("${cand} (incomplete, missing: ${missing[*]})")
                 continue
             fi
             MODEL="$cand"
+            MODEL_SOURCE="HF cache ${cache} (hf_repo ${repo})"
             return 0
         done
     done < <(ls -1dt -- "${snaps[@]}")
@@ -257,6 +260,8 @@ hf_lookup() {
 case "$MODEL_CHOICE" in
     /*)
         MODEL="$MODEL_CHOICE"
+        MODEL_SOURCE="absolute path given to --model"
+        skipped=()
         CHAT_TEMPLATE=""
         MODEL_LABEL="$(basename "$MODEL_CHOICE")"
         MODEL_ALIAS="$MODEL_LABEL"
@@ -285,9 +290,13 @@ case "$MODEL_CHOICE" in
         # install.sh --models-dir), and aliases.json's own search_paths.
         hf_caches=("${HF_HUB_CACHE:-${HF_HOME:-$HOME/.cache/huggingface}/hub}")
         search_dirs=()
+        search_srcs=()  # where each search_dirs entry came from, for MODEL_SOURCE
         if [[ -n "${LLMSRV_MODEL_PATHS:-}" ]]; then
             IFS=':' read -r -a env_dirs <<<"${LLMSRV_MODEL_PATHS}"
-            search_dirs+=("${env_dirs[@]}")
+            for dir in "${env_dirs[@]}"; do
+                search_dirs+=("$dir")
+                search_srcs+=("LLMSRV_MODEL_PATHS")
+            done
         fi
         SEARCH_PATHS_LOCAL="${DATA_DIR}/models/search_paths.local"
         if [[ -f "$SEARCH_PATHS_LOCAL" ]]; then
@@ -302,14 +311,18 @@ case "$MODEL_CHOICE" in
                     continue
                 fi
                 search_dirs+=("$line")
+                search_srcs+=("$SEARCH_PATHS_LOCAL")
             done < "$SEARCH_PATHS_LOCAL"
         fi
         while IFS= read -r dir; do
             search_dirs+=("$dir")
+            search_srcs+=("${ALIASES_FILE} search_paths")
         done < <(jq -r '.search_paths[]' "$ALIASES_FILE")
 
         MODEL=""
+        MODEL_SOURCE=""
         tried=()
+        skipped=()
         if [[ -n "$hf_repo" ]]; then
             declare -A seen_caches=()
             for cache in "${hf_caches[@]}"; do
@@ -320,13 +333,15 @@ case "$MODEL_CHOICE" in
                 [[ -z "$MODEL" ]] || break
             done
         fi
-        for dir in "${search_dirs[@]}"; do
+        for i in "${!search_dirs[@]}"; do
             [[ -n "$MODEL" ]] && break
+            dir="${search_dirs[i]}"
             [[ -n "$dir" ]] || continue
             dir="${dir/#\~/$HOME}"
             tried+=("${dir}/${filename}")
             if [[ -f "${dir}/${filename}" ]]; then
                 MODEL="${dir}/${filename}"
+                MODEL_SOURCE="${search_srcs[i]}"
                 break
             fi
         done
@@ -334,6 +349,18 @@ case "$MODEL_CHOICE" in
         [[ -n "$MODEL" ]] || die "'$filename' (model '$MODEL_CHOICE') not found in an HF cache (hf_repo), LLMSRV_MODEL_PATHS, models/search_paths.local or aliases.json search_paths -- tried: ${tried[*]}"
         ;;
 esac
+
+# model_resolution_report [prefix] -- how MODEL was found: its path, the
+# source that supplied it, and any incomplete HF snapshots passed over.
+# Printed by start/status and written into the unit file as comments.
+model_resolution_report() {
+    local prefix="${1:-}" s
+    echo "${prefix}model: ${MODEL}"
+    echo "${prefix}  via: ${MODEL_SOURCE}"
+    for s in "${skipped[@]}"; do
+        echo "${prefix}  skipped: ${s}"
+    done
+}
 
 # resolve_launch_config -- everything here is only needed to actually start
 # the server (check_mem/write_unit), not for status/stop, so it's a function
@@ -522,6 +549,7 @@ write_unit() {
 [Unit]
 Description=llmsrv.sh - ${MODEL_ALIAS} (llama-server)
 After=network.target
+$(model_resolution_report "# ")
 
 [Service]
 Type=simple
@@ -542,11 +570,20 @@ EOF
 }
 
 do_status() {
+    local unit_model=""
     if systemctl --user is-active --quiet "$UNIT_NAME"; then
         echo "running: ${MODEL_LABEL}, unit ${UNIT_NAME}, port ${PORT}"
+        model_resolution_report "  "
+        if [[ -f "$UNIT_FILE" ]]; then
+            unit_model="$(grep -oP '(?<=--model )\S+' "$UNIT_FILE" || true)"
+        fi
+        if [[ -n "$unit_model" && "$unit_model" != "$MODEL" ]]; then
+            echo "  NOTE: the running unit loaded ${unit_model} (see 'systemctl --user cat ${UNIT_NAME}'); a restart would load the path above"
+        fi
         curl -s -m 3 "http://127.0.0.1:${PORT}/health" 2>&1 || echo "(health check failed -- still loading, or unreachable)"
     else
         echo "not running: ${MODEL_LABEL}"
+        model_resolution_report "  "
         if [[ -f "$STOP_MARKER" ]]; then
             echo "(known-good shutdown -- $(cat "$STOP_MARKER"))"
         else
@@ -621,6 +658,7 @@ do_start() {
     [[ -x "$LLAMA_SERVER" ]] || die "llama-server not found/executable at $LLAMA_SERVER"
     [[ -f "$MODEL" ]] || die "model not found at $MODEL"
     [[ -z "$CHAT_TEMPLATE" || -f "$CHAT_TEMPLATE" ]] || die "chat template not found at $CHAT_TEMPLATE"
+    model_resolution_report "llmsrv.sh: " >&2
     resolve_launch_config
     check_mem
 
