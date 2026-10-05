@@ -5,10 +5,14 @@
         "~/workspace/models/llama.cpp/qwen3-4b-gguf",
         "~/workspace/models/llama.cpp/nemotron-nano-4b-gguf",
         "~/workspace/models/llama.cpp/qwen3-30b-a3b-gguf",
+        "~/workspace/models/llama.cpp/mimo-v2.6-distill-qwen-9b-gguf",
+        "~/workspace/models/llama.cpp/nemotron-3.5-lightning-30b-a3b-gguf",
         "~/models/nemotron3-gguf",
         "~/models/qwen3-4b-gguf",
         "~/models/nemotron-nano-4b-gguf",
         "~/models/qwen3-30b-a3b-gguf",
+        "~/models/mimo-v2.6-distill-qwen-9b-gguf",
+        "~/models/nemotron-3.5-lightning-30b-a3b-gguf",
         "~/models",
         "/opt/models",
         "/models"
@@ -43,6 +47,18 @@
             "alias": "qwen3-30b-a3b",
             "chat_template_file": null,
             "port": 8095
+        },
+        "mimo-9b": {
+            "filename": "MiMo-V2.6-Distill-Qwen-9B-Q8_0.gguf",
+            "alias": "mimo-v2.6-distill-qwen-9b",
+            "chat_template_file": null,
+            "port": 8096
+        },
+        "lightning": {
+            "filename": "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MXFP4_MOE.gguf",
+            "alias": "nemotron-3.5-lightning-30b-a3b",
+            "chat_template_file": null,
+            "port": 8097
         }
     }
 }
