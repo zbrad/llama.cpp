@@ -55,9 +55,10 @@
 #   uses to find each model's GGUF file. Directories in LLMSRV_MODEL_PATHS
 #   (colon-separated) and in <data dir>/models/search_paths.local (one per
 #   line, # comments) are searched before aliases.json's search_paths. An
-#   entry with "hf_repo" (org/name) is first looked up in the Hugging Face
-#   hub cache (HF_HUB_CACHE, else ${HF_HOME:-~/.cache/huggingface}/hub, plus
-#   "hf:<path>" lines in search_paths.local).
+#   entry with "hf_repo" (org/name) is first looked up, as "hf_file" if set,
+#   else its filename, in the Hugging Face hub cache (HF_HUB_CACHE, else
+#   ${HF_HOME:-~/.cache/huggingface}/hub, plus "hf:<path>" lines in
+#   search_paths.local).
 #   Env overrides: LLMSRV_HOME (explicit install dir, see above), LLMSRV_HOST,
 #   LLMSRV_MODEL_PATHS (see above), HF_HUB_CACHE/HF_HOME (see above),
 #   LLMSRV_CTX_SIZE (ceiling only now -- still clamped down to the model's
@@ -280,6 +281,7 @@ case "$MODEL_CHOICE" in
         [[ -n "$chat_template_rel" ]] && CHAT_TEMPLATE="${DATA_DIR}/${chat_template_rel}"
         DEFAULT_PORT="$(jq -r '.port // 8091' <<<"$entry")"
         hf_repo="$(jq -r '.hf_repo // empty' <<<"$entry")"
+        hf_file="$(jq -r '.hf_file // empty' <<<"$entry")"  # name in the HF repo, when it differs from filename
 
         # Searched in order: the entry's hf_repo in each known Hugging Face
         # hub cache (HF_HUB_CACHE, else ${HF_HOME:-~/.cache/huggingface}/hub,
@@ -329,7 +331,7 @@ case "$MODEL_CHOICE" in
                 cache="${cache/#\~/$HOME}"
                 [[ -n "$cache" && -z "${seen_caches[$cache]:-}" ]] || continue
                 seen_caches["$cache"]=1
-                hf_lookup "$cache" "$hf_repo" "$filename"
+                hf_lookup "$cache" "$hf_repo" "${hf_file:-$filename}"
                 [[ -z "$MODEL" ]] || break
             done
         fi

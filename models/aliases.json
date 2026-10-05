@@ -1,5 +1,5 @@
 {
-    "_comment": "Known-model alias table for launcher scripts (e.g. nemo.sh). Not read by llama-server itself -- llama.cpp's own --models-preset/router mechanism is INI-only (see docs/preset.md). 'filename' is resolved by walking search_paths in order and taking the first match, so no machine-specific absolute path needs to live here. llmsrv.sh searches LLMSRV_MODEL_PATHS (colon-separated) and models/search_paths.local (per-machine, gitignored, one path per line) before these. 'chat_template_file' (if set) is relative to this repo's root. 'port' is nemo.sh's default listen port for this model (overridable via NEMO_PORT) -- each entry gets its own so multiple models can run as parallel systemd --user services without colliding. Optional 'hf_repo' (org/name of the Hugging Face repo the file came from) makes llmsrv.sh check the HF hub cache for it before any directory.",
+    "_comment": "Known-model alias table for launcher scripts (e.g. nemo.sh). Not read by llama-server itself -- llama.cpp's own --models-preset/router mechanism is INI-only (see docs/preset.md). 'filename' is resolved by walking search_paths in order and taking the first match, so no machine-specific absolute path needs to live here. llmsrv.sh searches LLMSRV_MODEL_PATHS (colon-separated) and models/search_paths.local (per-machine, gitignored, one path per line) before these. 'chat_template_file' (if set) is relative to this repo's root. 'port' is nemo.sh's default listen port for this model (overridable via NEMO_PORT) -- each entry gets its own so multiple models can run as parallel systemd --user services without colliding. Optional 'hf_repo' (org/name of the Hugging Face repo the file came from) makes llmsrv.sh check the HF hub cache for it before any directory; optional 'hf_file' is the file's name in that repo when it differs from 'filename'.",
     "search_paths": [
         "~/workspace/models/llama.cpp/nemotron3-gguf",
         "~/workspace/models/llama.cpp/qwen3-4b-gguf",
@@ -41,12 +41,15 @@
         },
         "nemotron-nano-4b": {
             "filename": "Nemotron-3-Nano-4B-Q8_0.gguf",
+            "hf_repo": "unsloth/NVIDIA-Nemotron-3-Nano-4B-GGUF",
+            "hf_file": "NVIDIA-Nemotron-3-Nano-4B-Q8_0.gguf",
             "alias": "nemotron-nano-4b",
             "chat_template_file": null,
             "port": 8094
         },
         "qwen3-30b-a3b": {
             "filename": "Qwen3-30B-A3B-Q4_K_M.gguf",
+            "hf_repo": "Qwen/Qwen3-30B-A3B-GGUF",
             "alias": "qwen3-30b-a3b",
             "chat_template_file": null,
             "port": 8095
