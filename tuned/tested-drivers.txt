@@ -1,0 +1,9 @@
+# tuned/tested-drivers.txt — driver versions a tuned release has actually
+# been run on, read by tuned/compat-notes.sh into each release's notes.
+# Each line records the release that was tested, so a newer release's
+# notes never claim its own binary was tested on these drivers.
+#
+# <variant>  <driver>     <tested release>     <environment / result, rest of line>
+gb10         580.178.04   v10931-gb10-cu133    DGX OS 7.6.0, kernel 7.0.0-1019-nvidia, host CUDA 13.0 runtime; 38 GB GGUF fully on GPU (-ngl 99), completions served
+gb10         610.57.04    v10931-gb10-cu133    same environment and result; this driver branch has a separate memory leak, unrelated to llama.cpp
+gb10         615.71.09    v10931-gb10-cu133    same environment and result
