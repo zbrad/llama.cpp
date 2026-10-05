@@ -6,7 +6,7 @@
 # directory.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/zbrad/llama.cpp/tuning-v29/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/zbrad/llama.cpp/tuning-v30/install.sh | bash
 #   # a specific directory (current folder, or anywhere else):
 #   curl -fsSL .../install.sh | bash -s -- --dir .
 #   # skip the post-install tiny-model completion test:
@@ -56,7 +56,7 @@
 set -euo pipefail
 
 REPO="zbrad/llama.cpp"
-REPO_REF="${REPO_REF:-tuning-v29}"
+REPO_REF="${REPO_REF:-tuning-v30}"
 RAW_BASE="https://raw.githubusercontent.com/${REPO}/${REPO_REF}"
 
 DEFAULT_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/llmsrv"
