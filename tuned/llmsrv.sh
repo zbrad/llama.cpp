@@ -52,8 +52,11 @@
 #   default target of install.sh), or, for an install.sh --dir
 #   elsewhere (including the current folder), whatever LLMSRV_HOME points
 #   at. See aliases.json's own comment for the search-path resolution it
-#   uses to find each model's GGUF file.
+#   uses to find each model's GGUF file. Directories in LLMSRV_MODEL_PATHS
+#   (colon-separated) and in <data dir>/models/search_paths.local (one per
+#   line, # comments) are searched before aliases.json's search_paths.
 #   Env overrides: LLMSRV_HOME (explicit install dir, see above), LLMSRV_HOST,
+#   LLMSRV_MODEL_PATHS (see above),
 #   LLMSRV_CTX_SIZE (ceiling only now -- still clamped down to the model's
 #   trained context if that's smaller), LLMSRV_MEM_MARGIN_GIB,
 #   LLMSRV_PRIMARY_HOST, LLMSRV_PORT, LLMSRV_START_TIMEOUT_SEC (how long to
@@ -227,18 +230,43 @@ case "$MODEL_CHOICE" in
         [[ -n "$chat_template_rel" ]] && CHAT_TEMPLATE="${DATA_DIR}/${chat_template_rel}"
         DEFAULT_PORT="$(jq -r '.port // 8091' <<<"$entry")"
 
+        # Directories searched, in order: LLMSRV_MODEL_PATHS (colon-separated),
+        # then this machine's models/search_paths.local (one path per line,
+        # # comments, ~ expanded; gitignored, written by install.sh
+        # --models-dir), then aliases.json's own search_paths.
+        search_dirs=()
+        if [[ -n "${LLMSRV_MODEL_PATHS:-}" ]]; then
+            IFS=':' read -r -a env_dirs <<<"${LLMSRV_MODEL_PATHS}"
+            search_dirs+=("${env_dirs[@]}")
+        fi
+        SEARCH_PATHS_LOCAL="${DATA_DIR}/models/search_paths.local"
+        if [[ -f "$SEARCH_PATHS_LOCAL" ]]; then
+            while IFS= read -r line || [[ -n "$line" ]]; do
+                line="${line#"${line%%[![:space:]]*}"}"
+                line="${line%"${line##*[![:space:]]}"}"
+                if [[ -z "$line" || "$line" == \#* ]]; then
+                    continue
+                fi
+                search_dirs+=("$line")
+            done < "$SEARCH_PATHS_LOCAL"
+        fi
+        while IFS= read -r dir; do
+            search_dirs+=("$dir")
+        done < <(jq -r '.search_paths[]' "$ALIASES_FILE")
+
         MODEL=""
         tried=()
-        while IFS= read -r dir; do
+        for dir in "${search_dirs[@]}"; do
+            [[ -n "$dir" ]] || continue
             dir="${dir/#\~/$HOME}"
             tried+=("${dir}/${filename}")
             if [[ -f "${dir}/${filename}" ]]; then
                 MODEL="${dir}/${filename}"
                 break
             fi
-        done < <(jq -r '.search_paths[]' "$ALIASES_FILE")
+        done
 
-        [[ -n "$MODEL" ]] || die "'$filename' (model '$MODEL_CHOICE') not found in any search_paths entry -- tried: ${tried[*]}"
+        [[ -n "$MODEL" ]] || die "'$filename' (model '$MODEL_CHOICE') not found in LLMSRV_MODEL_PATHS, models/search_paths.local or aliases.json search_paths -- tried: ${tried[*]}"
         ;;
 esac
 
