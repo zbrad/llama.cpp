@@ -9,6 +9,8 @@
 #   curl -fsSL https://raw.githubusercontent.com/zbrad/llama.cpp/tuning-v28/install.sh | bash
 #   # a specific directory (current folder, or anywhere else):
 #   curl -fsSL .../install.sh | bash -s -- --dir .
+#   # skip the post-install tiny-model completion test:
+#   curl -fsSL .../install.sh | bash -s -- --skip-smoke-test
 #   # or, from a checkout:
 #   bash install.sh [--dir <path>]
 #
@@ -51,11 +53,14 @@ IS_DEFAULT_DIR=true
 VARIANT="${LLAMA_CPP_VARIANT:-}"
 CUDA_VERSION="${LLAMA_CPP_CUDA_VERSION:-}"
 EXACT_TAG="${LLAMA_CPP_TAG:-}"
+SKIP_SMOKE_TEST=false
+SMOKE_MODEL_URL="https://huggingface.co/ggml-org/test-model-stories260K/resolve/main/stories260K-f32.gguf"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --dir)     INSTALL_DIR="$2"; IS_DEFAULT_DIR=false; shift 2 ;;
         --dir=*)   INSTALL_DIR="${1#--dir=}"; IS_DEFAULT_DIR=false; shift ;;
+        --skip-smoke-test) SKIP_SMOKE_TEST=true; shift ;;
         *) echo "ERROR: unknown argument: $1" >&2; exit 1 ;;
     esac
 done
@@ -149,7 +154,8 @@ asset_name="$(
 [ -n "$asset_name" ] || die "no .tar.gz asset found in release $TAG"
 
 WORK_DIR="$(mktemp -d)"
-trap 'rm -rf "$WORK_DIR"' EXIT
+SERVER_PID=""
+trap 'if [ -n "$SERVER_PID" ]; then kill "$SERVER_PID" 2>/dev/null || true; fi; rm -rf "$WORK_DIR"' EXIT
 
 sha_name="${asset_name}.sha256"
 have_sha=false
@@ -175,6 +181,72 @@ fi
 # so there's no need to split binaries and libs into separate dirs).
 tar -xzf "$WORK_DIR/release.tar.gz" -C "$INSTALL_DIR"
 [ -x "$INSTALL_DIR/llama-server" ] || die "llama-server not found after extracting $TAG"
+
+# --- Self-check: every file from the tarball resolves its shared libraries,
+# and llama-server sees a CUDA device. Only the tarball's own files are
+# checked, since --dir may already hold unrelated libraries. ---
+status "Checking that every library resolves..."
+missing=""
+while IFS= read -r f; do
+    f="${f#./}"
+    if [ -z "$f" ] || [ ! -f "$INSTALL_DIR/$f" ] || [ -L "$INSTALL_DIR/$f" ]; then
+        continue
+    fi
+    if nf="$({ LD_LIBRARY_PATH="$INSTALL_DIR" ldd "$INSTALL_DIR/$f" 2>/dev/null || true; } | grep 'not found' | sort -u)"; then
+        missing+="  ${f}:"$'\n'"${nf}"$'\n'
+    fi
+done < <(tar -tzf "$WORK_DIR/release.tar.gz")
+if [ -n "$missing" ]; then
+    echo "$missing" >&2
+    rel_cuda="${TAG##*-cu}"
+    die "some libraries did not resolve (above). libcudart/libcublas come from any CUDA ${rel_cuda:0:2}.x toolkit install; libcuda.so.1 comes from the NVIDIA driver"
+fi
+
+status "Checking that llama-server sees a CUDA device..."
+devices="$(LD_LIBRARY_PATH="$INSTALL_DIR" "$INSTALL_DIR/llama-server" --list-devices </dev/null 2>&1 || true)"
+if ! grep -qE '^ *CUDA[0-9]+:' <<<"$devices"; then
+    echo "$devices" >&2
+    die "llama-server --list-devices listed no CUDA device (output above); check the NVIDIA driver (nvidia-smi) and CUDA_VISIBLE_DEVICES"
+fi
+grep -E '^ *CUDA[0-9]+:' <<<"$devices" | sed 's/^ */    /' >&2
+
+# --- Optional smoke test: a completion from a ~1 MB model on a temporary
+# local port. Skip with --skip-smoke-test. ---
+if ! $SKIP_SMOKE_TEST; then
+    status "Smoke test: tiny-model completion (skip with --skip-smoke-test)..."
+    curl -fsSL "$SMOKE_MODEL_URL" -o "$WORK_DIR/stories260K-f32.gguf" \
+        || die "could not download the smoke-test model from $SMOKE_MODEL_URL (rerun with --skip-smoke-test to skip)"
+    port=$((20000 + RANDOM % 40000))
+    LD_LIBRARY_PATH="$INSTALL_DIR" "$INSTALL_DIR/llama-server" -m "$WORK_DIR/stories260K-f32.gguf" \
+        --host 127.0.0.1 --port "$port" -ngl 99 </dev/null >"$WORK_DIR/smoke.log" 2>&1 &
+    SERVER_PID=$!
+    ready=false
+    for _ in $(seq 1 60); do
+        kill -0 "$SERVER_PID" 2>/dev/null || break
+        # kill -0 again after /health answers: on a port collision, another
+        # process could answer while our server has already exited
+        if curl -fsS "http://127.0.0.1:${port}/health" >/dev/null 2>&1 && kill -0 "$SERVER_PID" 2>/dev/null; then
+            ready=true
+            break
+        fi
+        sleep 1
+    done
+    if ! $ready; then
+        tail -20 "$WORK_DIR/smoke.log" >&2
+        die "smoke test: llama-server did not become ready on 127.0.0.1:${port} (log above; rerun, or use --skip-smoke-test)"
+    fi
+    reply="$(curl -fsS "http://127.0.0.1:${port}/completion" -H 'Content-Type: application/json' \
+        -d '{"prompt": "Once upon a time", "n_predict": 8}' 2>&1 || true)"
+    if ! grep -qE '"content": *"[^"]' <<<"$reply"; then
+        echo "$reply" >&2
+        tail -20 "$WORK_DIR/smoke.log" >&2
+        die "smoke test: no completion text returned (reply and log above)"
+    fi
+    kill "$SERVER_PID" 2>/dev/null || true
+    wait "$SERVER_PID" 2>/dev/null || true
+    SERVER_PID=""
+    status "Smoke test passed"
+fi
 
 # --- Fetch models/aliases.json + only the templates it references ---
 status "Fetching models/aliases.json..."
