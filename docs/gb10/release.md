@@ -32,16 +32,17 @@ counter and have been superseded by the date form; nothing parses the `N`.
    update the example URL in the header. Commit and push to `tuned-builds`.
    The tag will point at this commit, so the tagged tree contains the pin that
    names its own tag. `release.sh` does not edit the pin.
-2. **Dry run** with the CUDA toolkit pinned explicitly:
+2. **Dry run:**
 
    ```bash
-   CUDA_VER=13.3 bash tuned/release.sh gb10
+   bash tuned/release.sh gb10                 # or CUDA_TAG=cu133 / CUDA_VER=13.3
    ```
 
-   `CUDA_VER` (or `CUDA_TAG`) is required. Without it `tuned/env.sh` uses the
-   highest installed toolkit, which would silently change the `cuNNN` part of
-   the release name. For a gates-only check that builds nothing, add
-   `--preflight-only`.
+   The toolkit is chosen from the definitions in `tuned/common-data/toolkits/`
+   (see "Toolkit and build settings"). With neither `CUDA_TAG` nor `CUDA_VER`
+   set it uses the highest defined toolkit and prints the available list and
+   why, so the `cuNNN` part of the release name is never a surprise. For a
+   gates-only check that builds nothing, add `--preflight-only`.
 3. **Publish** by re-running with `--publish`. It tags the source tag on
    `HEAD`, pushes it to `origin`, then creates the GitHub release targeting
    `tuned-builds`. This is the only step that changes anything remote.
@@ -61,11 +62,10 @@ built:
 - `install.sh` `REPO_REF` is `tuning-YYYYMMDD`, dated today, and that tag does
   not exist locally or on `origin`;
 - the binary release `v<build>-<variant>-<cuda>` does not already exist;
-- `CUDA_HOME` is the toolkit-versioned path `/usr/local/cuda-<CUDA_VER>` with a
-  `bin/nvcc`. The unversioned `/usr/local/cuda` symlink is never used: it
-  points at the newest toolkit, not the one you pinned, and `tuned/env.sh`
-  now fails instead of falling back to it. An inherited `CUDA_HOME` that
-  points elsewhere is rejected rather than trusted;
+- the selected toolkit matches its definition: `nvcc` reports the declared
+  release and the installed `libnccl2` package is the declared version, at the
+  toolkit-versioned `CUDA_HOME`. The unversioned `/usr/local/cuda` symlink is
+  never used, and an inherited `CUDA_HOME` that points elsewhere is rejected;
 - if the build directory is already configured, its CUDA compiler is that
   toolkit's `nvcc`. The script never deletes a build directory; use another
   `LLAMA_TUNED_BUILD_DIR` or remove it yourself.
@@ -80,9 +80,31 @@ extracts the tarball to a temporary directory and checks:
   that `tuned/env.sh` derived for `HEAD` (catches packaging a stale binary);
 - every ELF file resolves all its libraries with `ldd` and its `RUNPATH`, if any,
   is exactly `$ORIGIN` (catches a missing `*-impl.so` or `libnccl`, and a
-  leftover absolute build path).
+  leftover absolute build path);
+- `libcudart`, `libcublas` and `libcublasLt` resolve under the selected
+  toolkit's directory. These checks run with the toolkit's own lib directory
+  first on `LD_LIBRARY_PATH`, because this host's `ld.so.conf` follows the
+  `/usr/local/cuda` symlink and could otherwise satisfy them from another
+  version. That pins the test run; it cannot decide what a deployed machine
+  resolves, since these libraries are deliberately not bundled.
 
 If any check fails, nothing is tagged or published.
+
+## Toolkit and build settings
+
+- `tuned/common-data/` is vendored from [zbrad/tuned-common](https://github.com/zbrad/tuned-common)
+  with `tuned/sync-common.sh sync`: the shared device file (`devices/gb10.conf`:
+  platform, arch, hardware label) and the toolkit definitions
+  (`toolkits/cuNNN.env`: versioned `CUDA_HOME`, `nvcc` release, `libnccl2`
+  version). Do not edit them here; change them in tuned-common.
+- `tuned/repo.env` holds this repo's own settings, currently the CMake flags
+  (`LLAMA_TUNED_CMAKE_FLAGS`) that `release.sh` configures with. It is tracked,
+  so a release is reproducible, and it may not change any shared key: any
+  attempt to change the hardware, toolkit or `CUDA_*` values is a loud error
+  listing every conflict.
+- A new toolkit is added in tuned-common as `toolkits/cuNNN.env` from values read
+  off a real install, then vendored here. A toolkit with no definition cannot be
+  used, even if it is installed.
 
 ## Rollback
 

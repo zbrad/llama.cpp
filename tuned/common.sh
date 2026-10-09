@@ -199,6 +199,206 @@ gpu_tuned_verify_cccl_version() {
     echo "OK: CCCL ${found_major}.${found_minor}.${found_patch} meets the minimum required version (${min_version})"
 }
 
+# gpu_tuned_load_toolkit <data-dir> <variant> [<toolkit-id>] — selects a CUDA
+# toolkit from <data-dir>/toolkits/<toolkit-id>.env (e.g. cu133), then
+# sources the optional <data-dir>/toolkits/<variant>-<toolkit-id>.env, which
+# overrides any key. With no id it uses the highest defined toolkit (by its
+# declared TOOLKIT_CUDA_VER, not by file name) and says so on stderr, naming
+# the whole list and the reason. It only ever picks from the toolkit files,
+# never from /usr/local/cuda or from what happens to be installed. An unknown
+# id is an error that lists the available ones, and an already-set CUDA_HOME
+# that differs from the toolkit's is rejected rather than trusted. Exports
+# CUDA_VER, CUDA_TAG, CUDA_HOME, GPU_TUNED_TOOLKIT_LIB_DIR (the toolkit's own
+# targets/<arch>-linux/lib, from GPU_TUNED_PLATFORM when set, else uname -m)
+# and prepends $CUDA_HOME/bin to PATH. It does not check the install: call
+# gpu_tuned_verify_toolkit for that.
+gpu_tuned_load_toolkit() {
+    local data_dir="$1" variant="$2" tk="${3:-}"
+    if [[ -z "${tk}" ]]; then
+        local f v listing="" best="" best_v=""
+        for f in "${data_dir}"/toolkits/*.env; do
+            [[ -f "${f}" ]] || continue
+            [[ "$(basename "${f}" .env)" == "${variant}-"* ]] && continue   # per-variant override file
+            v="$(sed -n 's/^TOOLKIT_CUDA_VER="\(.*\)"$/\1/p' "${f}" | head -1)"
+            listing+=" $(basename "${f}" .env)(${v:-?})"
+            if [[ -n "${v}" && ( -z "${best_v}" || "$(printf '%s\n%s\n' "${best_v}" "${v}" | sort -V | tail -1)" == "${v}" ) ]]; then
+                best="$(basename "${f}" .env)"; best_v="${v}"
+            fi
+        done
+        if [[ -z "${best}" ]]; then
+            echo "ERROR: gpu_tuned_load_toolkit: no toolkit given and none defined under ${data_dir}/toolkits" >&2
+            return 1
+        fi
+        echo "[toolkit] available:${listing}" >&2
+        echo "[toolkit] using ${best} (CUDA ${best_v}): none was specified, so the highest defined toolkit is used." >&2
+        echo "[toolkit] to choose another, set CUDA_TAG (e.g. CUDA_TAG=${best}) or CUDA_VER." >&2
+        tk="${best}"
+    fi
+    local base="${data_dir}/toolkits/${tk}.env"
+    local over="${data_dir}/toolkits/${variant}-${tk}.env"
+    if [[ ! -f "${base}" ]]; then
+        local f avail=""
+        for f in "${data_dir}"/toolkits/*.env; do
+            [[ -f "${f}" ]] && avail+=" $(basename "${f}" .env)"
+        done
+        echo "ERROR: gpu_tuned_load_toolkit: no toolkit file ${base}" >&2
+        echo "       available toolkits:${avail:- (none)}" >&2
+        return 1
+    fi
+    unset TOOLKIT_ID TOOLKIT_CUDA_VER TOOLKIT_CUDA_HOME TOOLKIT_NVCC_RELEASE TOOLKIT_NCCL_VERSION
+    # shellcheck disable=SC1090
+    source "${base}"
+    # shellcheck disable=SC1090
+    [[ -f "${over}" ]] && source "${over}"
+    local k
+    for k in TOOLKIT_ID TOOLKIT_CUDA_VER TOOLKIT_CUDA_HOME TOOLKIT_NVCC_RELEASE; do
+        if [[ -z "${!k:-}" ]]; then
+            echo "ERROR: gpu_tuned_load_toolkit: ${base} does not set ${k}" >&2
+            return 1
+        fi
+    done
+    if [[ "${TOOLKIT_ID}" != "${tk}" ]]; then
+        echo "ERROR: gpu_tuned_load_toolkit: ${base} sets TOOLKIT_ID=${TOOLKIT_ID}, expected ${tk}" >&2
+        return 1
+    fi
+    if [[ -n "${CUDA_HOME:-}" && "${CUDA_HOME}" != "${TOOLKIT_CUDA_HOME}" ]]; then
+        echo "ERROR: gpu_tuned_load_toolkit: CUDA_HOME is '${CUDA_HOME}' but toolkit ${tk} requires ${TOOLKIT_CUDA_HOME}." >&2
+        echo "       Unset CUDA_HOME or point it at the toolkit-versioned directory." >&2
+        return 1
+    fi
+    local platform="${GPU_TUNED_PLATFORM:-$(uname -m)}" target
+    case "${platform}" in
+        aarch64) target="sbsa-linux" ;;
+        x86_64) target="x86_64-linux" ;;
+        *) echo "ERROR: gpu_tuned_load_toolkit: unsupported platform '${platform}'" >&2; return 1 ;;
+    esac
+    export CUDA_VER="${TOOLKIT_CUDA_VER}"
+    export CUDA_TAG="${tk}"
+    export CUDA_HOME="${TOOLKIT_CUDA_HOME}"
+    export GPU_TUNED_TOOLKIT_LIB_DIR="${CUDA_HOME}/targets/${target}/lib"
+    export PATH="${CUDA_HOME}/bin:${PATH}"
+}
+
+# gpu_tuned_verify_toolkit — after gpu_tuned_load_toolkit, confirms the
+# install matches its definition: nvcc exists under CUDA_HOME and reports the
+# declared "release X.Y", and (when TOOLKIT_NCCL_VERSION is set) the installed
+# libnccl2 package is exactly that version. A mismatched NCCL is the quiet
+# failure: apt holds one libnccl2 at a time, so a toolkit other than the one
+# it was built for would be bundled with a foreign NCCL.
+gpu_tuned_verify_toolkit() {
+    if [[ -z "${TOOLKIT_ID:-}" ]]; then
+        echo "ERROR: gpu_tuned_verify_toolkit: no toolkit loaded (call gpu_tuned_load_toolkit first)." >&2
+        return 1
+    fi
+    if [[ "${CUDA_HOME:-}" != "${TOOLKIT_CUDA_HOME}" ]]; then
+        echo "ERROR: gpu_tuned_verify_toolkit: CUDA_HOME is '${CUDA_HOME:-}', expected ${TOOLKIT_CUDA_HOME}." >&2
+        return 1
+    fi
+    if [[ ! -x "${CUDA_HOME}/bin/nvcc" ]]; then
+        echo "ERROR: gpu_tuned_verify_toolkit: ${CUDA_HOME}/bin/nvcc not found; toolkit ${TOOLKIT_ID} is not installed." >&2
+        return 1
+    fi
+    local found
+    found="$("${CUDA_HOME}/bin/nvcc" --version 2>/dev/null | grep -oE 'release [0-9]+\.[0-9]+' | head -1 | awk '{print $2}' || true)"
+    if [[ "${found}" != "${TOOLKIT_NVCC_RELEASE}" ]]; then
+        echo "ERROR: gpu_tuned_verify_toolkit: ${CUDA_HOME}/bin/nvcc reports release '${found}', toolkit ${TOOLKIT_ID} declares ${TOOLKIT_NVCC_RELEASE}." >&2
+        return 1
+    fi
+    if [[ -n "${TOOLKIT_NCCL_VERSION:-}" ]]; then
+        if ! command -v dpkg-query >/dev/null 2>&1; then
+            echo "WARNING: gpu_tuned_verify_toolkit: dpkg-query not found; NCCL ${TOOLKIT_NCCL_VERSION} not checked." >&2
+        else
+            local nccl
+            nccl="$(dpkg-query -W -f='${Version}' libnccl2 2>/dev/null || true)"
+            if [[ "${nccl}" != "${TOOLKIT_NCCL_VERSION}" ]]; then
+                echo "ERROR: gpu_tuned_verify_toolkit: libnccl2 is '${nccl:-not installed}', toolkit ${TOOLKIT_ID} declares ${TOOLKIT_NCCL_VERSION}." >&2
+                return 1
+            fi
+        fi
+    fi
+    echo "OK: toolkit ${TOOLKIT_ID}: nvcc ${found} at ${CUDA_HOME}${TOOLKIT_NCCL_VERSION:+, libnccl2 ${TOOLKIT_NCCL_VERSION}}"
+}
+
+# gpu_tuned_verify_toolkit_libs <elf>... — resolves each file's libraries
+# with ldd under LD_LIBRARY_PATH=$GPU_TUNED_TOOLKIT_LIB_DIR and requires that
+# libcudart/libcublas/libcublasLt come from under CUDA_HOME and that no
+# library comes from a different /usr/local/cuda* tree. Without this, the
+# loader's ld.so.conf entries (which follow the /usr/local/cuda symlink to the
+# newest toolkit) can satisfy the lookup from the wrong version and a
+# "does it load" test passes against the wrong runtime.
+gpu_tuned_verify_toolkit_libs() {
+    if [[ -z "${GPU_TUNED_TOOLKIT_LIB_DIR:-}" ]]; then
+        echo "ERROR: gpu_tuned_verify_toolkit_libs: no toolkit loaded (call gpu_tuned_load_toolkit first)." >&2
+        return 1
+    fi
+    local f line name path real rc=0
+    for f in "$@"; do
+        while IFS= read -r line; do
+            # ldd lines are "<tab>name => path (addr)"; awk also trims the tab.
+            name="$(awk '{ print $1 }' <<< "${line}")"
+            path="$(awk '{ for (i = 1; i <= NF; i++) if ($i == "=>") { print $(i + 1); exit } }' <<< "${line}")"
+            [[ "${path}" == /* ]] || continue
+            real="$(readlink -f "${path}")"
+            if [[ "${name}" =~ ^lib(cudart|cublas|cublasLt)\.so ]] && [[ "${real}" != "${CUDA_HOME}"/* ]]; then
+                echo "ERROR: $(basename "${f}"): ${name} resolves to ${real}, not under ${CUDA_HOME}." >&2
+                rc=1
+            elif [[ "${real}" == /usr/local/cuda* && "${real}" != "${CUDA_HOME}"/* ]]; then
+                echo "ERROR: $(basename "${f}"): ${name} resolves to ${real}, a different CUDA tree than ${CUDA_HOME}." >&2
+                rc=1
+            fi
+        done < <(LD_LIBRARY_PATH="${GPU_TUNED_TOOLKIT_LIB_DIR}" ldd "${f}" 2>/dev/null || true)
+    done
+    return "${rc}"
+}
+
+# gpu_tuned_load_repo_env <file> — sources a repo's tuned/repo.env, which holds
+# only what is specific to that repo (CMake flags, paths, extra packages) and
+# must never change what the shared device and toolkit files decided. After
+# sourcing, every protected key (hardware, toolkit, CUDA_*) is compared with
+# its value from before; ALL changed, newly set or unset keys are reported in
+# one loud block and the function fails, so a repo cannot quietly drift from
+# the shared definitions. Call it after gpu_tuned_load_toolkit.
+GPU_TUNED_PROTECTED_KEYS=(
+    GPU_TUNED_VARIANT GPU_TUNED_PLATFORM GPU_TUNED_CUDA_ARCH GPU_TUNED_HW_LABEL
+    GPU_TUNED_TOOLKIT_LIB_DIR CUDA_VER CUDA_TAG CUDA_HOME
+    TOOLKIT_ID TOOLKIT_CUDA_VER TOOLKIT_CUDA_HOME TOOLKIT_NVCC_RELEASE TOOLKIT_NCCL_VERSION
+)
+gpu_tuned_load_repo_env() {
+    local file="$1"
+    if [[ ! -f "${file}" ]]; then
+        echo "ERROR: gpu_tuned_load_repo_env: no such file: ${file}" >&2
+        return 1
+    fi
+    local k
+    local -A was_set=() was_val=()
+    for k in "${GPU_TUNED_PROTECTED_KEYS[@]}"; do
+        if [[ -n "${!k+x}" ]]; then was_set[${k}]=1; was_val[${k}]="${!k}"; else was_set[${k}]=0; fi
+    done
+    # shellcheck disable=SC1090
+    source "${file}"
+    local conflicts=""
+    for k in "${GPU_TUNED_PROTECTED_KEYS[@]}"; do
+        if [[ -n "${!k+x}" ]]; then
+            if [[ "${was_set[${k}]}" -eq 0 ]]; then
+                conflicts+="    ${k}: was unset, ${file##*/} sets it to '${!k}'"$'\n'
+            elif [[ "${!k}" != "${was_val[${k}]}" ]]; then
+                conflicts+="    ${k}: '${was_val[${k}]}' -> '${!k}'"$'\n'
+            fi
+        elif [[ "${was_set[${k}]}" -eq 1 ]]; then
+            conflicts+="    ${k}: '${was_val[${k}]}' -> (unset)"$'\n'
+        fi
+    done
+    if [[ -n "${conflicts}" ]]; then
+        echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" >&2
+        echo "ERROR: ${file} conflicts with the shared device/toolkit definitions:" >&2
+        printf '%s' "${conflicts}" >&2
+        echo "  repo.env may only add repo-specific settings. Remove these lines, or" >&2
+        echo "  change the shared file in zbrad/tuned-common if the shared value is wrong." >&2
+        echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" >&2
+        return 1
+    fi
+}
+
 # gpu_tuned_embed_build_info <so-or-bin-path> <variant> <package> <version>
 # [hw-label] [repo-url] [section-name] — embeds a greppable build-info
 # string into a custom ELF section on the given file, readable later via

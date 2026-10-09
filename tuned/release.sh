@@ -15,13 +15,14 @@
 # so the tagged commit contains the pin that names its own tag. Gates check
 # that the pin is well formed, dated today, and not already taken.
 #
-# CUDA_VER (or CUDA_TAG) must be set explicitly: env.sh would otherwise
-# default to the highest installed toolkit and silently change the cuNNN
-# suffix of the release.
+# The CUDA toolkit comes from tuned/common-data/toolkits (set CUDA_TAG=cu133 or
+# CUDA_VER=13.3 to choose). With neither set, env.sh uses the highest defined
+# toolkit and prints the available list and why; the cuNNN suffix of the
+# release name follows from it. The CMake flags come from tuned/repo.env.
 #
-#   CUDA_VER=13.3 bash tuned/release.sh gb10                 # dry run
-#   CUDA_VER=13.3 bash tuned/release.sh gb10 --publish       # for real
-#   CUDA_VER=13.3 bash tuned/release.sh gb10 --preflight-only
+#   bash tuned/release.sh gb10                               # dry run
+#   CUDA_TAG=cu133 bash tuned/release.sh gb10 --publish      # for real
+#   bash tuned/release.sh gb10 --preflight-only
 set -euo pipefail
 
 REPODIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -39,13 +40,6 @@ for arg in "$@"; do
     esac
 done
 [[ -n "${VARIANT}" ]] || { echo "usage: tuned/release.sh <variant> [--publish] [--preflight-only] [--skip-build]" >&2; exit 2; }
-
-# CUDA must be pinned before env.sh runs, because env.sh fills in a default.
-if [[ -z "${CUDA_VER:-}" && -z "${CUDA_TAG:-}" ]]; then
-    echo "ERROR: set CUDA_VER (e.g. CUDA_VER=13.3) or CUDA_TAG explicitly; env.sh would" >&2
-    echo "       otherwise pick the highest installed toolkit and change the release name." >&2
-    exit 1
-fi
 
 # shellcheck source=env.sh
 source "${REPODIR}/tuned/env.sh" "${VARIANT}" || exit 1
@@ -122,10 +116,10 @@ else
     ok "binary release ${BIN_TAG} is free"
 fi
 
-if [[ "${CUDA_HOME}" == "/usr/local/cuda-${CUDA_VER}" && -x "${CUDA_HOME}/bin/nvcc" ]]; then
-    ok "CUDA_HOME is the versioned toolkit ${CUDA_HOME}"
+if gpu_tuned_verify_toolkit >/dev/null; then
+    ok "toolkit ${CUDA_TAG} verified: nvcc and libnccl2 match its definition (${CUDA_HOME})"
 else
-    fail "CUDA_HOME is '${CUDA_HOME}', expected /usr/local/cuda-${CUDA_VER} with bin/nvcc (the unversioned /usr/local/cuda symlink is not used)"
+    fail "toolkit ${CUDA_TAG} does not match its definition; run gpu_tuned_verify_toolkit for details"
 fi
 
 if [[ -f "${BUILD_DIR}/CMakeCache.txt" ]]; then
@@ -152,10 +146,10 @@ fi
 if [[ ${SKIP_BUILD} -eq 0 ]]; then
     echo ""
     echo "Building (CUDA ${CUDA_VER}, sm_${GPU_TUNED_CUDA_ARCH})..."
-    cmake -S "${REPODIR}" -B "${BUILD_DIR}" -DGGML_CUDA=ON \
-        -DCMAKE_BUILD_TYPE=Release \
+    # CMake takes the bare arch (121) and upgrades it to 121a itself.
+    cmake -S "${REPODIR}" -B "${BUILD_DIR}" "${LLAMA_TUNED_CMAKE_FLAGS[@]}" \
         -DCMAKE_CUDA_COMPILER="${CUDA_HOME}/bin/nvcc" \
-        -DCMAKE_CUDA_ARCHITECTURES="${GPU_TUNED_CUDA_ARCH}"
+        -DCMAKE_CUDA_ARCHITECTURES="${GPU_TUNED_CUDA_ARCH//[a-z]/}"
     cmake --build "${BUILD_DIR}" --config Release -j"$(nproc)"
 fi
 
@@ -174,7 +168,9 @@ CHECK_DIR="$(mktemp -d)"
 trap 'rm -rf "${CHECK_DIR}"' EXIT
 tar -C "${CHECK_DIR}" -xzf "${TARBALL}"
 
-version_line="$(env -u LD_LIBRARY_PATH "${CHECK_DIR}/llama-server" --version 2>&1 | grep -m1 '^version:' || true)"
+# Run with the toolkit's own lib dir first: the host's ld.so.conf follows the
+# /usr/local/cuda symlink, which can satisfy cudart/cublas from another version.
+version_line="$(env LD_LIBRARY_PATH="${GPU_TUNED_TOOLKIT_LIB_DIR}" "${CHECK_DIR}/llama-server" --version 2>&1 | grep -m1 '^version:' || true)"
 if [[ "${version_line}" == *"${LLAMA_TUNED_BUILD_NUMBER} (${LLAMA_TUNED_BUILD_COMMIT}"* ]]; then
     ok "extracted llama-server reports ${version_line#version: }"
 else
@@ -184,9 +180,10 @@ fi
 for f in "${CHECK_DIR}"/*; do
     [[ -f "${f}" && ! -L "${f}" ]] || continue
     readelf -h "${f}" >/dev/null 2>&1 || continue
-    if ldd "${f}" 2>&1 | grep -q 'not found'; then
-        fail "$(basename "${f}"): unresolved dependency: $(ldd "${f}" 2>&1 | grep 'not found' | head -1 | awk '{print $1}')"
+    if LD_LIBRARY_PATH="${GPU_TUNED_TOOLKIT_LIB_DIR}" ldd "${f}" 2>&1 | grep -q 'not found'; then
+        fail "$(basename "${f}"): unresolved dependency: $(LD_LIBRARY_PATH="${GPU_TUNED_TOOLKIT_LIB_DIR}" ldd "${f}" 2>&1 | grep 'not found' | head -1 | awk '{print $1}')"
     fi
+    gpu_tuned_verify_toolkit_libs "${f}" || FAILURES=$((FAILURES + 1))
     rp="$(readelf -d "${f}" 2>/dev/null | grep -oP '(?<=\((RUNPATH|RPATH)\)\s{1,10}Library (runpath|rpath): \[)[^\]]+' || true)"
     if [[ -n "${rp}" && "${rp}" != '$ORIGIN' ]]; then
         fail "$(basename "${f}"): RUNPATH is '${rp}', expected \$ORIGIN"

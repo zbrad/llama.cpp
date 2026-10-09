@@ -13,10 +13,14 @@
 # as `git rev-parse --short HEAD`; this file derives those the same way so
 # a release tag always matches what `llama-cli --version` itself reports.
 #
-#   CUDA_VER=13.3  bash tuned/package.sh gb10
-#   CUDA_TAG=cu133 bash tuned/package.sh gb10
+#   CUDA_TAG=cu133 bash tuned/package.sh gb10     (or CUDA_VER=13.3)
 #
-# Defaults to the highest installed toolkit under /usr/local/cuda-<ver>.
+# The toolkit comes from the vendored definitions in tuned/common-data/
+# toolkits/<id>.env (zbrad/tuned-common), never from /usr/local/cuda or from
+# whatever happens to be installed. With neither CUDA_TAG nor CUDA_VER set, the
+# highest defined toolkit is used and the available list and the reason are
+# printed. Repo-specific settings live in tuned/repo.env, loaded last; it may
+# not change any shared key (a conflict is a loud error).
 
 GPU_TUNED_ARG_VARIANT="$1"
 if [[ -z "${GPU_TUNED_ARG_VARIANT}" ]]; then
@@ -25,9 +29,10 @@ if [[ -z "${GPU_TUNED_ARG_VARIANT}" ]]; then
 fi
 
 GPU_TUNED_SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=devices/gb10.conf
-source "${GPU_TUNED_SELF_DIR}/devices/${GPU_TUNED_ARG_VARIANT}.conf" || return 1 2>/dev/null || exit 1
-export GPU_TUNED_VARIANT GPU_TUNED_PLATFORM GPU_TUNED_CUDA_ARCH GPU_TUNED_HW_LABEL GPU_TUNED_DEVICE_LABEL
+GPU_TUNED_DATA_DIR="${GPU_TUNED_SELF_DIR}/common-data"
+# shellcheck source=common-data/devices/gb10.conf
+source "${GPU_TUNED_DATA_DIR}/devices/${GPU_TUNED_ARG_VARIANT}.conf" || return 1 2>/dev/null || exit 1
+export GPU_TUNED_VARIANT GPU_TUNED_PLATFORM GPU_TUNED_CUDA_ARCH GPU_TUNED_HW_LABEL
 
 # shellcheck source=common.sh
 # Vendored from https://github.com/zbrad/tuned-common (pinned commit --
@@ -50,33 +55,25 @@ REPODIR="$(cd "${GPU_TUNED_SELF_DIR}/.." && pwd)"
 : "${LLAMA_TUNED_BUILD_COMMIT:=$(git -C "${REPODIR}" rev-parse --short HEAD 2>/dev/null || echo unknown)}"
 export LLAMA_TUNED_BUILD_NUMBER LLAMA_TUNED_BUILD_COMMIT
 
-# --- Resolve CUDA_VER / CUDA_TAG (specify either, derive the other) ---
-if [ -n "${CUDA_VER:-}" ]; then
-    : "${CUDA_TAG:=cu${CUDA_VER//./}}"                          # 13.3 -> cu133
-elif [ -n "${CUDA_TAG:-}" ]; then
-    _cuda_digits="${CUDA_TAG#cu}"                               # cu133 -> 133
-    : "${CUDA_VER:=${_cuda_digits%?}.${_cuda_digits: -1}}"     # 133 -> 13.3
-    unset _cuda_digits
+# --- CUDA toolkit: chosen from tuned/common-data/toolkits, never inferred from
+#     /usr/local/cuda or from what is installed. CUDA_TAG (cu133) or CUDA_VER
+#     (13.3) select one; neither set means the highest defined, stated loudly. ---
+_llama_tk="${CUDA_TAG:-}"
+_llama_req_ver="${CUDA_VER:-}"
+if [ -z "${_llama_tk}" ] && [ -n "${_llama_req_ver}" ]; then
+    _llama_tk="cu${_llama_req_ver//./}"                         # 13.3 -> cu133
 fi
-if [ -z "${CUDA_VER:-}" ]; then
-    _llama_latest="$(gpu_tuned_installed_cuda_toolkits | tail -1)"
-    CUDA_VER="${_llama_latest:-13.3}"  # last-resort fallback if nothing is installed yet
-    unset _llama_latest
+gpu_tuned_load_toolkit "${GPU_TUNED_DATA_DIR}" "${GPU_TUNED_VARIANT}" "${_llama_tk}" || return 1 2>/dev/null || exit 1
+if [ -n "${_llama_req_ver}" ] && [ "${_llama_req_ver}" != "${TOOLKIT_CUDA_VER}" ]; then
+    echo "[tuned/env] ERROR: CUDA_VER=${_llama_req_ver} conflicts with toolkit ${CUDA_TAG} (CUDA ${TOOLKIT_CUDA_VER})." >&2
+    return 1 2>/dev/null || exit 1
 fi
-export CUDA_VER
-export CUDA_TAG="${CUDA_TAG:-cu${CUDA_VER//./}}"
+unset _llama_tk _llama_req_ver
+gpu_tuned_verify_toolkit || return 1 2>/dev/null || exit 1
 
-# --- Resolve CUDA_HOME to the matching toolkit when not explicitly set ---
-if [ -z "${CUDA_HOME:-}" ]; then
-    if [ -d "/usr/local/cuda-${CUDA_VER}" ]; then
-        export CUDA_HOME="/usr/local/cuda-${CUDA_VER}"
-    else
-        echo "[tuned/env] ERROR: /usr/local/cuda-${CUDA_VER} not found. Not falling back to the" >&2
-        echo "[tuned/env]        unversioned /usr/local/cuda symlink; install that toolkit or set CUDA_HOME." >&2
-        return 1 2>/dev/null || exit 1
-    fi
-fi
-export PATH="$CUDA_HOME/bin:$PATH"
+# --- Repo-specific settings (CMake flags, ...), loaded last; may not change
+#     any shared device/toolkit key. ---
+gpu_tuned_load_repo_env "${GPU_TUNED_SELF_DIR}/repo.env" || return 1 2>/dev/null || exit 1
 
 # gpu_tuned_verify_arch/gpu_tuned_verify_cuda_compat now come from
 # common.sh (sourced above); call sites in package.sh pass
