@@ -71,8 +71,9 @@ if [ -z "${CUDA_HOME:-}" ]; then
     if [ -d "/usr/local/cuda-${CUDA_VER}" ]; then
         export CUDA_HOME="/usr/local/cuda-${CUDA_VER}"
     else
-        echo "[tuned/env] WARNING: /usr/local/cuda-${CUDA_VER} not found; falling back to /usr/local/cuda." >&2
-        export CUDA_HOME="/usr/local/cuda"
+        echo "[tuned/env] ERROR: /usr/local/cuda-${CUDA_VER} not found. Not falling back to the" >&2
+        echo "[tuned/env]        unversioned /usr/local/cuda symlink; install that toolkit or set CUDA_HOME." >&2
+        return 1 2>/dev/null || exit 1
     fi
 fi
 export PATH="$CUDA_HOME/bin:$PATH"
