@@ -216,6 +216,18 @@ RELEASE_NOTES="$(redact_hostnames "llama-server + llama-quantize + $(( ${#SO_FIL
 
 ${COMPAT_NOTES}")"
 
+# LLAMA_TUNED_NO_PUBLISH=1 (set by tuned/release.sh) stops here and leaves
+# the tag, title and notes next to the tarball, so the caller can verify the
+# tarball and then publish exactly these files.
+if [[ -n "${LLAMA_TUNED_NO_PUBLISH:-}" ]]; then
+    printf '%s\n' "${RELEASE_TAG}" > "${DIST_DIR}/release-tag.txt"
+    printf '%s\n' "${RELEASE_TITLE}" > "${DIST_DIR}/release-title.txt"
+    printf '%s\n' "${RELEASE_NOTES}" > "${DIST_DIR}/release-notes.md"
+    echo ""
+    echo "LLAMA_TUNED_NO_PUBLISH set: packaged ${RELEASE_TAG}, not published."
+    exit 0
+fi
+
 echo ""
 echo "Publishing to GitHub release ${RELEASE_TAG}..."
 gpu_tuned_publish_release "zbrad/llama.cpp" "${RELEASE_TAG}" "${RELEASE_TITLE}" \

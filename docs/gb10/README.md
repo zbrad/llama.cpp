@@ -24,6 +24,7 @@ curl -fsSL https://raw.githubusercontent.com/zbrad/llama.cpp/tuned-builds/instal
 
 See [llmsrv-launcher.md](llmsrv-launcher.md#getting-llmsrvsh--a-matching-binary)
 for install locations other than the default, and env-var overrides.
+Maintainers: how a build is released is in [release.md](release.md).
 
 ## Building for Spark
 
