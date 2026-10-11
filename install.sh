@@ -198,7 +198,10 @@ fi
 # binary's own canonical directory even when invoked through a symlink --
 # so there's no need to split binaries and libs into separate dirs).
 tar -xzf "$WORK_DIR/release.tar.gz" -C "$INSTALL_DIR"
-[ -x "$INSTALL_DIR/llama-server" ] || die "llama-server not found after extracting $TAG"
+# New releases ship llama-server-tuned; older pinned tags (tuning-vN) ship llama-server.
+SERVER=llama-server-tuned; QUANT=llama-quantize-tuned
+if [ ! -x "$INSTALL_DIR/$SERVER" ] && [ -x "$INSTALL_DIR/llama-server" ]; then SERVER=llama-server; QUANT=llama-quantize; fi
+[ -x "$INSTALL_DIR/$SERVER" ] || die "$SERVER not found after extracting $TAG"
 
 # --- Self-check: every file from the tarball resolves its shared libraries,
 # and llama-server sees a CUDA device. Only the tarball's own files are
@@ -221,7 +224,7 @@ if [ -n "$missing" ]; then
 fi
 
 status "Checking that llama-server sees a CUDA device..."
-devices="$(LD_LIBRARY_PATH="$INSTALL_DIR" "$INSTALL_DIR/llama-server" --list-devices </dev/null 2>&1 || true)"
+devices="$(LD_LIBRARY_PATH="$INSTALL_DIR" "$INSTALL_DIR/$SERVER" --list-devices </dev/null 2>&1 || true)"
 if ! grep -qE '^ *CUDA[0-9]+:' <<<"$devices"; then
     echo "$devices" >&2
     die "llama-server --list-devices listed no CUDA device (output above); check the NVIDIA driver (nvidia-smi) and CUDA_VISIBLE_DEVICES"
@@ -235,7 +238,7 @@ if ! $SKIP_SMOKE_TEST; then
     curl -fsSL "$SMOKE_MODEL_URL" -o "$WORK_DIR/stories260K-f32.gguf" \
         || die "could not download the smoke-test model from $SMOKE_MODEL_URL (rerun with --skip-smoke-test to skip)"
     port=$((20000 + RANDOM % 40000))
-    LD_LIBRARY_PATH="$INSTALL_DIR" "$INSTALL_DIR/llama-server" -m "$WORK_DIR/stories260K-f32.gguf" \
+    LD_LIBRARY_PATH="$INSTALL_DIR" "$INSTALL_DIR/$SERVER" -m "$WORK_DIR/stories260K-f32.gguf" \
         --host 127.0.0.1 --port "$port" -ngl 99 </dev/null >"$WORK_DIR/smoke.log" 2>&1 &
     SERVER_PID=$!
     ready=false
@@ -334,8 +337,8 @@ if $IS_DEFAULT_DIR; then
     BIN_DIR="${HOME}/.local/bin"
     mkdir -p "$BIN_DIR"
     ln -sf "$INSTALL_DIR/llmsrv.sh" "$BIN_DIR/llmsrv.sh"
-    ln -sf "$INSTALL_DIR/llama-server" "$BIN_DIR/llama-server"
-    ln -sf "$INSTALL_DIR/llama-quantize" "$BIN_DIR/llama-quantize"
+    ln -sf "$INSTALL_DIR/$SERVER" "$BIN_DIR/$SERVER"
+    ln -sf "$INSTALL_DIR/$QUANT" "$BIN_DIR/$QUANT"
     status "Symlinked onto ${BIN_DIR} (make sure it's on PATH)"
     echo ""
     echo "Run it:"

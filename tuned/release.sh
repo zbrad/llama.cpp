@@ -170,11 +170,11 @@ tar -C "${CHECK_DIR}" -xzf "${TARBALL}"
 
 # Run with the toolkit's own lib dir first: the host's ld.so.conf follows the
 # /usr/local/cuda symlink, which can satisfy cudart/cublas from another version.
-version_line="$(env LD_LIBRARY_PATH="${GPU_TUNED_TOOLKIT_LIB_DIR}" "${CHECK_DIR}/llama-server" --version 2>&1 | grep -m1 '^version:' || true)"
+version_line="$(env LD_LIBRARY_PATH="${GPU_TUNED_TOOLKIT_LIB_DIR}" "${CHECK_DIR}/llama-server-tuned" --version 2>&1 | grep -m1 '^version:' || true)"
 if [[ "${version_line}" == *"${LLAMA_TUNED_BUILD_NUMBER} (${LLAMA_TUNED_BUILD_COMMIT}"* ]]; then
-    ok "extracted llama-server reports ${version_line#version: }"
+    ok "extracted llama-server-tuned reports ${version_line#version: }"
 else
-    fail "extracted llama-server reports '${version_line}', expected ${LLAMA_TUNED_BUILD_NUMBER} (${LLAMA_TUNED_BUILD_COMMIT})"
+    fail "extracted llama-server-tuned reports '${version_line}', expected ${LLAMA_TUNED_BUILD_NUMBER} (${LLAMA_TUNED_BUILD_COMMIT})"
 fi
 
 for f in "${CHECK_DIR}"/*; do

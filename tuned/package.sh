@@ -93,7 +93,7 @@ OURS_MANIFEST="$(mktemp)"
 SYSTEM_MANIFEST="$(mktemp)"
 trap 'rm -rf "${STAGE}" "${OURS_MANIFEST}" "${SYSTEM_MANIFEST}"' EXIT
 for b in "${BINARIES[@]}"; do
-    cp -p "${BIN_DIR}/${b}" "${STAGE}/"
+    cp -p "${BIN_DIR}/${b}" "${STAGE}/${b}-tuned"   # shipped name never collides with upstream's
 done
 for so in "${SO_FILES[@]}"; do
     cp -p "${so}" "${STAGE}/"
@@ -207,7 +207,7 @@ gpu_tuned_rename_sonames "${STAGE}" "${OURS_MANIFEST}" | sed 's/^/  /'
 # resolves inside the stage or is assumed present on the target
 gpu_tuned_verify_unique_sonames "${STAGE}" "${SYSTEM_MANIFEST}" "" "${ASSUME_PRESENT_RE}"
 # patchelf rewrote the stamped files; prove the build-info stamp survived on both
-gpu_tuned_verify_build_info "${STAGE}/llama-server" llama_tuned "${LLAMA_TUNED_BUILD_NUMBER}" .llama_tuned_build_info >/dev/null
+gpu_tuned_verify_build_info "${STAGE}/llama-server-tuned" llama_tuned "${LLAMA_TUNED_BUILD_NUMBER}" .llama_tuned_build_info >/dev/null
 STAGED_CUDA_SO="$(find "${STAGE}" -maxdepth 1 -name 'libggml-cuda*.so.*.*' -not -type l | head -1)"
 [[ -n "${STAGED_CUDA_SO}" ]] || { echo "ERROR: no staged libggml-cuda*.so.*.* after the rename." >&2; exit 1; }
 gpu_tuned_verify_build_info "${STAGED_CUDA_SO}" llama_tuned "${LLAMA_TUNED_BUILD_NUMBER}" .llama_tuned_build_info >/dev/null
@@ -243,7 +243,7 @@ redact_hostnames() {
 RELEASE_TAG="v${LLAMA_TUNED_BUILD_NUMBER}-${GPU_TUNED_VARIANT}-${CUDA_TAG}"
 RELEASE_TITLE="llama.cpp ${LLAMA_TUNED_BUILD_NUMBER} (${LLAMA_TUNED_BUILD_COMMIT}) — ${GPU_TUNED_HW_LABEL} (${CUDA_TAG})"
 COMPAT_NOTES="$(bash "${REPODIR}/tuned/compat-notes.sh" "${GPU_TUNED_VARIANT}" "${STAGE}")"
-RELEASE_NOTES="$(redact_hostnames "llama-server + llama-quantize + $(( ${#SO_FILES[@]} )) shared libraries, single-arch (sm_${GPU_TUNED_CUDA_ARCH}), built against CUDA ${CUDA_VER}. Includes the Ollama-format GGUF compatibility shim. Easiest setup: curl -fsSL https://raw.githubusercontent.com/zbrad/llama.cpp/tuned-builds/install.sh | bash -- fetches this release, models/aliases.json, and llmsrv.sh for you (that URL always has the current installer; install.sh itself defaults to a pinned tuning-vN tag internally, see its own header). To deploy into an Ollama installation instead, see zbrad/ollama's tuned-builds fetch script, or manually: extract and copy llama-server + libs to your Ollama lib directory, symlinking llama-server into place (see zbrad/ollama's docs/local-llama-cpp.md).
+RELEASE_NOTES="$(redact_hostnames "llama-server-tuned + llama-quantize-tuned + $(( ${#SO_FILES[@]} )) shared libraries, single-arch (sm_${GPU_TUNED_CUDA_ARCH}), built against CUDA ${CUDA_VER}. Includes the Ollama-format GGUF compatibility shim. Easiest setup: curl -fsSL https://raw.githubusercontent.com/zbrad/llama.cpp/tuned-builds/install.sh | bash -- fetches this release, models/aliases.json, and llmsrv.sh for you (that URL always has the current installer; install.sh itself defaults to a pinned tuning-vN tag internally, see its own header). To deploy into an Ollama installation instead, see zbrad/ollama's tuned-builds fetch script, or manually: extract and copy llama-server + libs to your Ollama lib directory, symlinking llama-server into place (see zbrad/ollama's docs/local-llama-cpp.md).
 
 ${COMPAT_NOTES}")"
 

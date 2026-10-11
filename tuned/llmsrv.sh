@@ -116,10 +116,14 @@ elif [[ -f "${REPODIR}/models/aliases.json" ]]; then
 else
     DATA_DIR="${RESOURCE_DIR}"
 fi
-if [[ -n "${LLMSRV_HOME:-}" && -x "${LLMSRV_HOME}/llama-server" ]]; then
-    LLAMA_SERVER="${LLMSRV_HOME}/llama-server"
+if [[ -n "${LLMSRV_HOME:-}" && -x "${LLMSRV_HOME}/llama-server-tuned" ]]; then
+    LLAMA_SERVER="${LLMSRV_HOME}/llama-server-tuned"
+elif [[ -n "${LLMSRV_HOME:-}" && -x "${LLMSRV_HOME}/llama-server" ]]; then
+    LLAMA_SERVER="${LLMSRV_HOME}/llama-server"   # tarballs older than the -tuned rename
 elif [[ -x "${REPODIR}/build/bin/llama-server" ]]; then
     LLAMA_SERVER="${REPODIR}/build/bin/llama-server"
+elif command -v llama-server-tuned >/dev/null 2>&1; then
+    LLAMA_SERVER="$(command -v llama-server-tuned)"
 elif command -v llama-server >/dev/null 2>&1; then
     LLAMA_SERVER="$(command -v llama-server)"
 else
