@@ -43,8 +43,8 @@ if [[ -n "${newer}" ]]; then
     exit 1
 fi
 
-CUDA_SO="$(find "${LIB_DIR}" -maxdepth 1 -name 'libggml-cuda.so.*' -not -type l | head -1)"
-[[ -n "${CUDA_SO}" ]] || { echo "ERROR: no libggml-cuda.so.* in ${LIB_DIR}" >&2; exit 1; }
+CUDA_SO="$(find "${LIB_DIR}" -maxdepth 1 -name 'libggml-cuda*.so.*' -not -type l | head -1)" # also the tuned name, libggml-cuda-tuned.so.*
+[[ -n "${CUDA_SO}" ]] || { echo "ERROR: no libggml-cuda*.so.* in ${LIB_DIR}" >&2; exit 1; }
 cubins="$(cuobjdump --list-elf "${CUDA_SO}" 2>/dev/null | grep -oE 'sm_[0-9]+[a-z]?' || true)"
 cubin_count="$(echo "${cubins}" | grep -c . || true)"
 [[ "${cubin_count}" -gt 0 ]] || { echo "ERROR: no cubins found in ${CUDA_SO}" >&2; exit 1; }

@@ -87,7 +87,11 @@ mkdir -p "${DIST_DIR}"
 TARBALL="${DIST_DIR}/llama-cpp-${LLAMA_TUNED_BUILD_NUMBER}-${GPU_TUNED_VARIANT}-${CUDA_TAG}.tar.gz"
 
 STAGE="$(mktemp -d)"
-trap 'rm -rf "${STAGE}"' EXIT
+# Provenance manifests (outside STAGE, so they never ship): the shared objects THIS build
+# produced, which get a unique identity below, and the bundled system libraries, which do not.
+OURS_MANIFEST="$(mktemp)"
+SYSTEM_MANIFEST="$(mktemp)"
+trap 'rm -rf "${STAGE}" "${OURS_MANIFEST}" "${SYSTEM_MANIFEST}"' EXIT
 for b in "${BINARIES[@]}"; do
     cp -p "${BIN_DIR}/${b}" "${STAGE}/"
 done
@@ -100,9 +104,11 @@ for so in "${SO_FILES[@]}"; do
     # machine's own build/bin/ via the RUNPATH stripped below, meaning it
     # only ever "worked" by accident on the machine it was built on).
     so_name="$(basename "${so}")"
+    echo "${so_name}" >> "${OURS_MANIFEST}"
     soname="$(readelf -d "${so}" 2>/dev/null | grep -oP '(?<=Library soname: \[)[^\]]+')"
     if [[ -n "${soname}" && "${soname}" != "${so_name}" ]]; then
         cp -p "${so}" "${STAGE}/${soname}"
+        echo "${soname}" >> "${OURS_MANIFEST}"
     fi
 done
 
@@ -159,9 +165,11 @@ for deppath in "${!EXTRA_SYSTEM_LIBS[@]}"; do
     echo "  ${real}"
     real_name="$(basename "${real}")"
     cp -p "${real}" "${STAGE}/${real_name}"
+    echo "${real_name}" >> "${SYSTEM_MANIFEST}"
     soname="$(readelf -d "${real}" 2>/dev/null | grep -oP '(?<=Library soname: \[)[^\]]+')"
     if [[ -n "${soname}" && "${soname}" != "${real_name}" && ! -e "${STAGE}/${soname}" ]]; then
         cp -p "${real}" "${STAGE}/${soname}"
+        echo "${soname}" >> "${SYSTEM_MANIFEST}"
     fi
     SO_FILES+=("${real}")
 done
@@ -180,6 +188,29 @@ for f in "${STAGE}"/*; do
         patchelf --set-rpath '$ORIGIN' "${f}"
     fi
 done
+
+# Give every shared object this build produced a unique identity (libggml.so.0 -> libggml-tuned.so.0,
+# file name, SONAME and every DT_NEEDED that names it), so a stock llama.cpp installed beside this one,
+# or an LD_LIBRARY_PATH pointing at one, cannot swap libraries with ours in either direction. See
+# "unique shared-object identities" in tuned-common's tuned-common.sh. The rename is a patchelf pass
+# at staging time; nothing in the upstream-tracked build changes. It assumes backends are LINKED
+# libraries: a build with GGML_BACKEND_DL=ON loads them by filename and needs a keep-list instead.
+if ! grep -qE '^GGML_BACKEND_DL:BOOL=OFF$' "${BUILD_DIR}/CMakeCache.txt"; then
+    echo "ERROR: ${BUILD_DIR} was not configured with GGML_BACKEND_DL=OFF. The shared-object rename assumes" >&2
+    echo "  linked backends; dynamic backends are discovered by filename and would stop loading." >&2
+    exit 1
+fi
+echo ""
+echo "Giving this build's shared objects unique identities:"
+gpu_tuned_rename_sonames "${STAGE}" "${OURS_MANIFEST}" | sed 's/^/  /'
+# fail closed: every shared object is tuned, or a recorded bundled system library; every DT_NEEDED
+# resolves inside the stage or is assumed present on the target
+gpu_tuned_verify_unique_sonames "${STAGE}" "${SYSTEM_MANIFEST}" "" "${ASSUME_PRESENT_RE}"
+# patchelf rewrote the stamped files; prove the build-info stamp survived on both
+gpu_tuned_verify_build_info "${STAGE}/llama-server" llama_tuned "${LLAMA_TUNED_BUILD_NUMBER}" .llama_tuned_build_info >/dev/null
+STAGED_CUDA_SO="$(find "${STAGE}" -maxdepth 1 -name 'libggml-cuda*.so.*.*' -not -type l | head -1)"
+[[ -n "${STAGED_CUDA_SO}" ]] || { echo "ERROR: no staged libggml-cuda*.so.*.* after the rename." >&2; exit 1; }
+gpu_tuned_verify_build_info "${STAGED_CUDA_SO}" llama_tuned "${LLAMA_TUNED_BUILD_NUMBER}" .llama_tuned_build_info >/dev/null
 
 echo ""
 echo "Packaging $(basename "${STAGE}")'s $(ls "${STAGE}" | wc -l) files -> ${TARBALL}..."
