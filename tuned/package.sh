@@ -202,10 +202,9 @@ if ! grep -qE '^GGML_BACKEND_DL:BOOL=OFF$' "${BUILD_DIR}/CMakeCache.txt"; then
 fi
 echo ""
 echo "Giving this build's shared objects unique identities:"
-gpu_tuned_rename_sonames "${STAGE}" "${OURS_MANIFEST}" | sed 's/^/  /'
-# fail closed: every shared object is tuned, or a recorded bundled system library; every DT_NEEDED
-# resolves inside the stage or is assumed present on the target
-gpu_tuned_verify_unique_sonames "${STAGE}" "${SYSTEM_MANIFEST}" "" "${ASSUME_PRESENT_RE}"
+# gpu_tuned_rename_package renames, then fails closed: every shared object is tuned, or a recorded
+# bundled system library; every DT_NEEDED resolves inside the stage or is assumed present on the target
+gpu_tuned_rename_package "${STAGE}" "${OURS_MANIFEST}" "${SYSTEM_MANIFEST}" "" "${ASSUME_PRESENT_RE}"
 # patchelf rewrote the stamped files; prove the build-info stamp survived on both
 gpu_tuned_verify_build_info "${STAGE}/llama-server-tuned" llama_tuned "${LLAMA_TUNED_BUILD_NUMBER}" .llama_tuned_build_info >/dev/null
 STAGED_CUDA_SO="$(find "${STAGE}" -maxdepth 1 -name 'libggml-cuda*.so.*.*' -not -type l | head -1)"
