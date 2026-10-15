@@ -75,6 +75,18 @@ gpu_tuned_verify_toolkit || return 1 2>/dev/null || exit 1
 #     any shared device/toolkit key. ---
 gpu_tuned_load_repo_env "${GPU_TUNED_SELF_DIR}/repo.env" || return 1 2>/dev/null || exit 1
 
+# --- Output layout: one build tree per toolkit and variant, build-tuned/<cuda-tag>/<variant>/
+#     (matched by the repo's /build* ignore, and apart from build/, which the local units run),
+#     so two toolkits never share a CMake cache. The test log sits next to it; the release gate
+#     reads it. LLAMA_TUNED_BUILD_DIR overrides the tree (the cache check in build.sh still
+#     applies). ccache is per toolkit too. ---
+LLAMA_TUNED_BUILD_ROOT="${REPODIR}/build-tuned"
+: "${LLAMA_TUNED_BUILD_DIR:=$(gpu_tuned_cuda_subdir "${LLAMA_TUNED_BUILD_ROOT}" "${CUDA_TAG}" "${GPU_TUNED_VARIANT}")}" || return 1 2>/dev/null || exit 1
+LLAMA_TUNED_TEST_LOG="${LLAMA_TUNED_BUILD_DIR}/TEST_RESULTS_${GPU_TUNED_VARIANT}.log"
+export LLAMA_TUNED_BUILD_DIR LLAMA_TUNED_TEST_LOG
+export CCACHE_DIR="${LLAMA_TUNED_BUILD_ROOT}/${CUDA_TAG}/ccache"
+export CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-20G}"
+
 # gpu_tuned_verify_arch/gpu_tuned_verify_cuda_compat now come from
 # common.sh (sourced above); call sites in package.sh pass
 # GPU_TUNED_CUDA_ARCH explicitly (the shared version takes it as an arg

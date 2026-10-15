@@ -1,8 +1,9 @@
 #!/bin/bash
 # tuned/release.sh <variant> [--publish] [--preflight-only] [--skip-build]
 #
-# Orchestrates a tuned release: preflight gates -> build -> package ->
-# verify -> (only with --publish) tag + push + publish. Without --publish
+# Orchestrates a tuned release: preflight gates -> build (tuned/build.sh) -> test gate (a passing
+# tuned/full_test.sh log newer than the build) -> package -> verify -> (only with --publish) tag
+# + push + publish. Build, then run tuned/full_test.sh, then release with --skip-build. Without --publish
 # it is a dry run: everything up to and including verification really runs,
 # but nothing is tagged, pushed or published.
 #
@@ -46,7 +47,7 @@ source "${REPODIR}/tuned/env.sh" "${VARIANT}" || exit 1
 
 REPO="zbrad/llama.cpp"
 BRANCH="tuned-builds"
-BUILD_DIR="${LLAMA_TUNED_BUILD_DIR:-${REPODIR}/build}"
+BUILD_DIR="${LLAMA_TUNED_BUILD_DIR}"   # from env.sh: build-tuned/<cuda-tag>/<variant>
 DIST_DIR="${REPODIR}/dist/${GPU_TUNED_VARIANT}"
 BIN_TAG="v${LLAMA_TUNED_BUILD_NUMBER}-${GPU_TUNED_VARIANT}-${CUDA_TAG}"
 SRC_TAG="$(sed -n 's/^REPO_REF="\${REPO_REF:-\(.*\)}"$/\1/p' "${REPODIR}/install.sh" | head -1)"
@@ -145,12 +146,31 @@ fi
 # --- Build ---
 if [[ ${SKIP_BUILD} -eq 0 ]]; then
     echo ""
-    echo "Building (CUDA ${CUDA_VER}, sm_${GPU_TUNED_CUDA_ARCH})..."
-    # CMake takes the bare arch (121) and upgrades it to 121a itself.
-    cmake -S "${REPODIR}" -B "${BUILD_DIR}" "${LLAMA_TUNED_CMAKE_FLAGS[@]}" \
-        -DCMAKE_CUDA_COMPILER="${CUDA_HOME}/bin/nvcc" \
-        -DCMAKE_CUDA_ARCHITECTURES="${GPU_TUNED_CUDA_ARCH//[a-z]/}"
-    cmake --build "${BUILD_DIR}" --config Release -j"$(gpu_tuned_jobs)"
+    bash "${REPODIR}/tuned/build.sh" "${VARIANT}"
+fi
+
+# --- Test gate: a passing tuned/full_test.sh log, newer than everything the build produced.
+#     Run `bash tuned/full_test.sh ${VARIANT}` after the build; this script never runs it, so a
+#     release can't pass on a log from an earlier build (or another toolkit: the log lives in
+#     the toolkit's own build tree). ---
+echo ""
+echo "Test gate:"
+if [[ ! -f "${LLAMA_TUNED_TEST_LOG}" ]]; then
+    fail "${LLAMA_TUNED_TEST_LOG} not found; run tuned/full_test.sh ${VARIANT}"
+else
+    newer="$(find "${BUILD_DIR}/bin" -maxdepth 1 -type f \( -name 'llama-*' -o -name 'lib*.so*' \) -newer "${LLAMA_TUNED_TEST_LOG}" -print -quit)"
+    if [[ -n "${newer}" ]]; then
+        fail "${newer} is newer than the test log; re-run tuned/full_test.sh ${VARIANT}"
+    elif ! grep -q "Full test suite summary: ctest passed" "${LLAMA_TUNED_TEST_LOG}"; then
+        fail "${LLAMA_TUNED_TEST_LOG} does not show a clean pass"
+    else
+        ok "full test suite passed, log newer than the build"
+    fi
+fi
+if [[ ${FAILURES} -gt 0 ]]; then
+    echo "" >&2
+    echo "ERROR: test gate failed; nothing was packaged or published." >&2
+    exit 1
 fi
 
 # --- Package (no publish) ---

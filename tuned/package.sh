@@ -17,7 +17,7 @@ GPU_TUNED_ARG_VARIANT="${1:?usage: tuned/package.sh <variant>}"
 # shellcheck source=env.sh
 source "${REPODIR}/tuned/env.sh" "${GPU_TUNED_ARG_VARIANT}" || exit 1
 
-BUILD_DIR="${LLAMA_TUNED_BUILD_DIR:-${REPODIR}/build}"
+BUILD_DIR="${LLAMA_TUNED_BUILD_DIR}"   # from env.sh: build-tuned/<cuda-tag>/<variant>
 BIN_DIR="${BUILD_DIR}/bin"
 
 echo "===================================================="
