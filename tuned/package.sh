@@ -244,10 +244,10 @@ tar -C "${CHECK_DIR}" -xzf "${TARBALL}"
 # Run with the toolkit's own lib dir first: the host's ld.so.conf follows the /usr/local/cuda
 # symlink, which can satisfy cudart/cublas from another version.
 version_line="$(env LD_LIBRARY_PATH="${GPU_TUNED_TOOLKIT_LIB_DIR}" "${CHECK_DIR}/llama-server-tuned" --version 2>&1 | grep -m1 '^version:' || true)"
-if [[ "${version_line}" == *"${LLAMA_TUNED_BUILD_NUMBER} (${LLAMA_TUNED_BUILD_COMMIT}"* ]]; then
+if [[ "${version_line}" == *"(build ${LLAMA_TUNED_BUILD_NUMBER}, commit ${LLAMA_TUNED_BUILD_COMMIT})"* ]]; then
     pkg_ok "extracted llama-server-tuned reports ${version_line#version: }"
 else
-    pkg_fail "extracted llama-server-tuned reports '${version_line}', expected ${LLAMA_TUNED_BUILD_NUMBER} (${LLAMA_TUNED_BUILD_COMMIT})"
+    pkg_fail "extracted llama-server-tuned reports '${version_line}', expected (build ${LLAMA_TUNED_BUILD_NUMBER}, commit ${LLAMA_TUNED_BUILD_COMMIT})"
 fi
 for f in "${CHECK_DIR}"/*; do
     [[ -f "${f}" && ! -L "${f}" ]] || continue
@@ -256,7 +256,7 @@ for f in "${CHECK_DIR}"/*; do
         pkg_fail "$(basename "${f}"): unresolved dependency: $(LD_LIBRARY_PATH="${GPU_TUNED_TOOLKIT_LIB_DIR}" ldd "${f}" 2>&1 | grep 'not found' | head -1 | awk '{print $1}')"
     fi
     gpu_tuned_verify_toolkit_libs "${f}" || PKG_FAILURES=$((PKG_FAILURES + 1))
-    rp="$(readelf -d "${f}" 2>/dev/null | grep -oP '(?<=\((RUNPATH|RPATH)\)\s{1,10}Library (runpath|rpath): \[)[^\]]+' || true)"
+    rp="$(readelf -d "${f}" 2>/dev/null | sed -n 's/.*(\(RUNPATH\|RPATH\)).*\[\(.*\)\]/\2/p' | head -1)"
     if [[ -n "${rp}" && "${rp}" != '$ORIGIN' ]]; then
         pkg_fail "$(basename "${f}"): RUNPATH is '${rp}', expected \$ORIGIN"
     fi
