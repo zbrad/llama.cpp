@@ -44,8 +44,9 @@ source "${GPU_TUNED_SELF_DIR}/common.sh" || return 1 2>/dev/null || exit 1
 
 gpu_tuned_assert_platform "${GPU_TUNED_PLATFORM}" "${GPU_TUNED_VARIANT}" || return 1 2>/dev/null || exit 1
 
-# --- Build identity: same derivation as cmake/build-info.cmake, so a
-#     release tag always matches `llama-cli --version`'s own output. ---
+# --- Build number: same derivation as cmake/build-info.cmake (commit count), so it matches what
+#     `llama-server --version` reports; tuned/package.sh checks that. It is NOT the identity of a
+#     release: that is the UTC date label (v0.<date>.<seq>-<variant>-<cuda>) package.sh allocates. ---
 REPODIR="$(cd "${GPU_TUNED_SELF_DIR}/.." && pwd)"
 # Respect pre-set overrides (e.g. when re-packaging an already-built binary
 # after a tooling-only commit that didn't require a rebuild -- the git-HEAD

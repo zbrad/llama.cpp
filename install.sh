@@ -132,6 +132,16 @@ status "Install dir:  $INSTALL_DIR"
 status "Variant:      $VARIANT"
 status "CUDA version: $CUDA_VERSION ($CUDA_TAG)"
 
+# newest_tag: reads tags on stdin, prints the newest. Two shapes exist: the date label
+# v0.<YYYYMMDD>.<seq>-<variant>-cu<N> (current; newer by date, then sequence) and the older
+# counter v<build>-<variant>-cu<N>, which is always older than any date-label tag.
+newest_tag() {
+    awk '{ t = $0; split(t, p, "-")
+           if (t ~ /^v0\.[0-9]{8}\./) { split(substr(p[1], 2), d, "."); k = sprintf("1 %s %09d", d[2], d[3]) }
+           else k = sprintf("0 %09d", substr(p[1], 2))
+           print k "\t" t }' | sort | tail -1 | cut -f2
+}
+
 # --- Resolve release tag: exact CUDA match preferred, else newest release
 # sharing the same CUDA major -- CUDA's own minor version compatibility
 # guarantees a binary built with toolkit X.y runs on any driver reporting
@@ -144,18 +154,18 @@ if [ -z "$EXACT_TAG" ]; then
         curl -fsSL "https://api.github.com/repos/${REPO}/releases?per_page=100" \
             | grep -o '"tag_name": *"[^"]*"' \
             | sed 's/.*"tag_name": *"\([^"]*\)"/\1/' \
-            | grep -E "^v[0-9]+-${VARIANT}-cu[0-9]+\$" || true
+            | grep -E "^(v[0-9]+|v0\.[0-9]{8}\.[0-9]+)-${VARIANT}-cu[0-9]+\$" || true
     )"
     [ -n "$candidates" ] || die "no releases found on $REPO matching variant '$VARIANT'"
 
-    TAG="$(echo "$candidates" | grep -- "-${CUDA_TAG}\$" | sort -t- -k1.2 -n | tail -1 || true)"
+    TAG="$(echo "$candidates" | grep -- "-${CUDA_TAG}\$" | newest_tag || true)"
     if [ -z "$TAG" ]; then
         TAG="$(
             echo "$candidates" | while read -r t; do
                 t_cuda="${t##*-cu}"
                 t_major="${t_cuda:0:2}"
                 [ "$t_major" = "$CUDA_MAJOR" ] && echo "$t"
-            done | sort -t- -k1.2 -n | tail -1
+            done | newest_tag
         )"
         [ -n "$TAG" ] && status "NOTE: no exact CUDA ${CUDA_VERSION} release for ${VARIANT}; falling back to $TAG (same CUDA major, minor-version compatible)"
     fi

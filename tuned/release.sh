@@ -8,12 +8,14 @@
 # log newer than the build; a package made from that build after the tests; only release notes
 # changed since the package's commit; the notes are not a DRAFT.
 #
-# The release is named for the commit the binaries were built from (package-info.txt), so a
-# notes-only commit after packaging does not change the tag.
+# The release is named by the date label package.sh allocated (UTC date of HEAD's commit plus a
+# sequence for that date): the native tag v0.<date>.<seq>-<variant>-<cuda>, recorded in
+# package-info.txt, so a notes-only commit after packaging does not change it. The build number
+# is only what llama-server --version reports.
 #
 # Two things get released together:
-#   - the source tag  tuning-vN / tuning-YYYYMMDD  (what install.sh's REPO_REF pins)
-#   - the binary release  v<build>-<variant>-<cuda>  (what install.sh fetches)
+#   - the source tag  tuning-YYYYMMDD  (what install.sh's REPO_REF pins)
+#   - the binary release  v0.<date>.<seq>-<variant>-<cuda>  (what install.sh fetches)
 # The source tag name is read from install.sh's REPO_REF default, bumped by hand and committed
 # before releasing. The CUDA toolkit is chosen as in build.sh (CUDA_TAG / CUDA_VER).
 #
@@ -38,6 +40,7 @@ done
 # The build identity comes from the package, not HEAD: notes-only commits after packaging move HEAD.
 PKG_INFO="${REPODIR}/dist/${VARIANT}/package-info.txt"
 if [[ -f "${PKG_INFO}" ]]; then
+    BIN_TAG="$(sed -n 's/^release_tag=//p' "${PKG_INFO}")"
     LLAMA_TUNED_BUILD_NUMBER="$(sed -n 's/^build_number=//p' "${PKG_INFO}")"
     LLAMA_TUNED_BUILD_COMMIT="$(sed -n 's/^build_commit=//p' "${PKG_INFO}")"
     export LLAMA_TUNED_BUILD_NUMBER LLAMA_TUNED_BUILD_COMMIT
@@ -50,14 +53,14 @@ REPO="zbrad/llama.cpp"
 BRANCH="tuned-builds"
 BUILD_DIR="${LLAMA_TUNED_BUILD_DIR}"   # from env.sh: build-tuned/<cuda-tag>/<variant>
 DIST_DIR="${REPODIR}/dist/${GPU_TUNED_VARIANT}"
-BIN_TAG="v${LLAMA_TUNED_BUILD_NUMBER}-${GPU_TUNED_VARIANT}-${CUDA_TAG}"
+BIN_TAG="${BIN_TAG:-}"   # from package-info.txt; the date label was allocated when packaging
 SRC_TAG="$(sed -n 's/^REPO_REF="\${REPO_REF:-\(.*\)}"$/\1/p' "${REPODIR}/install.sh" | head -1)"
 
 echo "===================================================="
 echo "llama.cpp ${GPU_TUNED_HW_LABEL} Release  ($([[ ${PUBLISH} -eq 1 ]] && echo PUBLISH || echo "dry run"))"
 echo "===================================================="
 echo "  Source tag  : ${SRC_TAG:-<not found in install.sh>}"
-echo "  Binary tag  : ${BIN_TAG}"
+echo "  Binary tag  : ${BIN_TAG:-<no package yet>}"
 echo "  Build       : ${LLAMA_TUNED_BUILD_NUMBER} (${LLAMA_TUNED_BUILD_COMMIT})"
 echo "  CUDA        : ${CUDA_TAG}"
 echo ""
@@ -112,7 +115,9 @@ else
     fail "install.sh REPO_REF '${SRC_TAG}' is not of the form tuning-YYYYMMDD"
 fi
 
-if gh release view "${BIN_TAG}" --repo "${REPO}" >/dev/null 2>&1; then
+if [[ -z "${BIN_TAG}" ]]; then
+    fail "no package-info.txt, so no release tag; run tuned/package.sh ${VARIANT}"
+elif gh release view "${BIN_TAG}" --repo "${REPO}" >/dev/null 2>&1; then
     fail "binary release ${BIN_TAG} already exists"
 else
     ok "binary release ${BIN_TAG} is free"
@@ -189,7 +194,7 @@ else
 fi
 
 # --- Release notes: a tracked, reviewed file; not a draft. ---
-NOTES_FILE="${REPODIR}/tuned/releases/RELEASE_NOTES_${LLAMA_TUNED_BUILD_NUMBER}_${GPU_TUNED_VARIANT}_${CUDA_TAG}.md"
+NOTES_FILE="${REPODIR}/tuned/releases/RELEASE_NOTES_${BIN_TAG#v}.md"
 if [[ ! -f "${NOTES_FILE}" ]]; then
     fail "${NOTES_FILE} not found; tuned/package.sh writes a draft"
 elif grep -q 'DRAFT — not yet published' "${NOTES_FILE}"; then
@@ -203,7 +208,7 @@ if [[ ${FAILURES} -gt 0 ]]; then
     exit 1
 fi
 
-RELEASE_TITLE="llama.cpp ${LLAMA_TUNED_BUILD_NUMBER} (${LLAMA_TUNED_BUILD_COMMIT}) — ${GPU_TUNED_HW_LABEL} (${CUDA_TAG})"
+RELEASE_TITLE="llama.cpp ${BIN_TAG#v} (build ${LLAMA_TUNED_BUILD_NUMBER}, ${LLAMA_TUNED_BUILD_COMMIT}) — ${GPU_TUNED_HW_LABEL} (${CUDA_TAG})"
 
 # --- Publish (only with --publish) ---
 echo ""

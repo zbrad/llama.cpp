@@ -1,10 +1,10 @@
 #!/bin/bash
 # tuned/package.sh <variant> — package the build tuned/build.sh made (and tuned/full_test.sh
-# tested) for ONE variant and ONE CUDA toolkit into dist/<variant>/llama-cpp-<build>-<variant>-<cuda>.tar.gz
+# tested) for ONE variant and ONE CUDA toolkit into dist/<variant>/llama-cpp-0.<date>.<seq>-<variant>-<cuda>.tar.gz
 # with a .sha256 sidecar and package-info.txt, then check the tarball as a consumer gets it
 # (extract, version, ldd, RUNPATH, toolkit libs). It packages only: no tag, no publishing.
 # tuned/release.sh publishes exactly these files, with the tracked release notes
-# (tuned/releases/RELEASE_NOTES_<build>_<variant>_<cuda>.md; a draft is written here if there is none).
+# (tuned/releases/RELEASE_NOTES_0.<date>.<seq>_<variant>_<cuda>.md; a draft is written here if there is none).
 # Same split as raft, cuvs and faiss.
 #
 #   CUDA_TAG=cu133 bash tuned/build.sh gb10 && CUDA_TAG=cu133 bash tuned/full_test.sh gb10
@@ -84,10 +84,18 @@ gpu_tuned_verify_cuda_compat "${CUDA_SO}" "${CUDA_VER}"
 # tools/ui sources as this checkout; never upstream's lockfile built or downloaded by CMake.
 UI_BUILD="$(bash "${REPODIR}/tuned/check-ui.sh" "${BUILD_DIR}")" || exit 1
 
+# Release identity: the UTC date of HEAD's commit plus the lowest unused sequence for that date among
+# the repo's release tags (gpu_tuned_allocate_date_label; origin is read, GPU_TUNED_LABEL_SEQ=<n>
+# chooses offline), as the native tag v0.<date>.<seq>-<variant>-<cuda>. Allocated once, here, and
+# recorded in package-info.txt: release.sh must not recompute it, because a notes commit moves HEAD
+# (and its date). The build number below is only what llama-server --version reports.
+LABEL="$(gpu_tuned_allocate_date_label "${REPODIR}")" || exit 1
+RELEASE_TAG="$(gpu_tuned_native_tag "${GPU_TUNED_VARIANT}" "${CUDA_TAG}" "${LABEL}")" || exit 1
+echo "  Release   : ${RELEASE_TAG}"
 DIST_DIR="${REPODIR}/dist/${GPU_TUNED_VARIANT}"
 rm -rf "${DIST_DIR}"
 mkdir -p "${DIST_DIR}"
-TARBALL="${DIST_DIR}/llama-cpp-${LLAMA_TUNED_BUILD_NUMBER}-${GPU_TUNED_VARIANT}-${CUDA_TAG}.tar.gz"
+TARBALL="${DIST_DIR}/llama-cpp-${RELEASE_TAG#v}.tar.gz"
 
 STAGE="$(mktemp -d)"
 # Provenance manifests (outside STAGE, so they never ship): the shared objects THIS build
@@ -275,6 +283,7 @@ fi
 # commits, when HEAD no longer matches it).
 cat > "${DIST_DIR}/package-info.txt" <<INFO
 tarball=$(basename "${TARBALL}")
+release_tag=${RELEASE_TAG}
 build_number=${LLAMA_TUNED_BUILD_NUMBER}
 build_commit=${LLAMA_TUNED_BUILD_COMMIT}
 cuda_tag=${CUDA_TAG}
@@ -299,7 +308,7 @@ redact_hostnames() {
     echo "${text}"
 }
 
-NOTES_FILE="${REPODIR}/tuned/releases/RELEASE_NOTES_${LLAMA_TUNED_BUILD_NUMBER}_${GPU_TUNED_VARIANT}_${CUDA_TAG}.md"
+NOTES_FILE="${REPODIR}/tuned/releases/RELEASE_NOTES_${RELEASE_TAG#v}.md"
 if [[ -f "${NOTES_FILE}" ]]; then
     echo "Release notes exist: ${NOTES_FILE}"
 else
