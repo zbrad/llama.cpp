@@ -1,46 +1,47 @@
 #!/bin/bash
-# tuned/release.sh <variant> [--publish] [--preflight-only] [--skip-build]
+# tuned/release.sh <variant> [--publish] [--preflight-only] — publish the tarball tuned/package.sh
+# made, with the tracked release notes, after the gates. Same split as raft, cuvs and faiss:
+#   tuned/build.sh -> tuned/full_test.sh -> tuned/package.sh -> (review + commit the notes) -> this.
+# Without --publish it is a dry run: every gate really runs, nothing is tagged, pushed or published.
 #
-# Orchestrates a tuned release: preflight gates -> build (tuned/build.sh) -> test gate (a passing
-# tuned/full_test.sh log newer than the build) -> package -> verify -> (only with --publish) tag
-# + push + publish. Build, then run tuned/full_test.sh, then release with --skip-build. Without --publish
-# it is a dry run: everything up to and including verification really runs,
-# but nothing is tagged, pushed or published.
+# Gates: preflight (clean tree, branch, origin, gh, install.sh pin, toolkit); a passing full_test.sh
+# log newer than the build; a package made from that build after the tests; only release notes
+# changed since the package's commit; the notes are not a DRAFT.
+#
+# The release is named for the commit the binaries were built from (package-info.txt), so a
+# notes-only commit after packaging does not change the tag.
 #
 # Two things get released together:
-#   - the source tag  tuning-YYYYMMDD   (what install.sh's REPO_REF pins)
+#   - the source tag  tuning-vN / tuning-YYYYMMDD  (what install.sh's REPO_REF pins)
 #   - the binary release  v<build>-<variant>-<cuda>  (what install.sh fetches)
+# The source tag name is read from install.sh's REPO_REF default, bumped by hand and committed
+# before releasing. The CUDA toolkit is chosen as in build.sh (CUDA_TAG / CUDA_VER).
 #
-# The source tag name is NOT computed here. It is read from install.sh's
-# REPO_REF default, which is bumped by hand and committed before releasing,
-# so the tagged commit contains the pin that names its own tag. Gates check
-# that the pin is well formed, dated today, and not already taken.
-#
-# The CUDA toolkit comes from tuned/common-data/toolkits (set CUDA_TAG=cu133 or
-# CUDA_VER=13.3 to choose). With neither set, env.sh uses the highest defined
-# toolkit and prints the available list and why; the cuNNN suffix of the
-# release name follows from it. The CMake flags come from tuned/repo.env.
-#
-#   bash tuned/release.sh gb10                               # dry run
+#   CUDA_TAG=cu133 bash tuned/release.sh gb10                # dry run
 #   CUDA_TAG=cu133 bash tuned/release.sh gb10 --publish      # for real
-#   bash tuned/release.sh gb10 --preflight-only
 set -euo pipefail
 
 REPODIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VARIANT=""
 PUBLISH=0
 PREFLIGHT_ONLY=0
-SKIP_BUILD=0
 for arg in "$@"; do
     case "${arg}" in
         --publish) PUBLISH=1 ;;
         --preflight-only) PREFLIGHT_ONLY=1 ;;
-        --skip-build) SKIP_BUILD=1 ;;
         -*) echo "ERROR: unknown option ${arg}" >&2; exit 2 ;;
         *) VARIANT="${arg}" ;;
     esac
 done
-[[ -n "${VARIANT}" ]] || { echo "usage: tuned/release.sh <variant> [--publish] [--preflight-only] [--skip-build]" >&2; exit 2; }
+[[ -n "${VARIANT}" ]] || { echo "usage: tuned/release.sh <variant> [--publish] [--preflight-only]" >&2; exit 2; }
+
+# The build identity comes from the package, not HEAD: notes-only commits after packaging move HEAD.
+PKG_INFO="${REPODIR}/dist/${VARIANT}/package-info.txt"
+if [[ -f "${PKG_INFO}" ]]; then
+    LLAMA_TUNED_BUILD_NUMBER="$(sed -n 's/^build_number=//p' "${PKG_INFO}")"
+    LLAMA_TUNED_BUILD_COMMIT="$(sed -n 's/^build_commit=//p' "${PKG_INFO}")"
+    export LLAMA_TUNED_BUILD_NUMBER LLAMA_TUNED_BUILD_COMMIT
+fi
 
 # shellcheck source=env.sh
 source "${REPODIR}/tuned/env.sh" "${VARIANT}" || exit 1
@@ -143,18 +144,11 @@ if [[ ${PREFLIGHT_ONLY} -eq 1 ]]; then
     exit 0
 fi
 
-# --- Build ---
-if [[ ${SKIP_BUILD} -eq 0 ]]; then
-    echo ""
-    bash "${REPODIR}/tuned/build.sh" "${VARIANT}"
-fi
-
-# --- Test gate: a passing tuned/full_test.sh log, newer than everything the build produced.
-#     Run `bash tuned/full_test.sh ${VARIANT}` after the build; this script never runs it, so a
-#     release can't pass on a log from an earlier build (or another toolkit: the log lives in
-#     the toolkit's own build tree). ---
+# --- Test gate: a passing tuned/full_test.sh log, newer than everything the build produced. This
+#     script never runs the tests, so a release can't pass on a log from an earlier build or
+#     another toolkit (the log lives in the toolkit's own build tree). ---
 echo ""
-echo "Test gate:"
+echo "Gates:"
 if [[ ! -f "${LLAMA_TUNED_TEST_LOG}" ]]; then
     fail "${LLAMA_TUNED_TEST_LOG} not found; run tuned/full_test.sh ${VARIANT}"
 else
@@ -167,72 +161,66 @@ else
         ok "full test suite passed, log newer than the build"
     fi
 fi
-if [[ ${FAILURES} -gt 0 ]]; then
-    echo "" >&2
-    echo "ERROR: test gate failed; nothing was packaged or published." >&2
-    exit 1
-fi
 
-# --- Package (no publish) ---
-echo ""
-LLAMA_TUNED_NO_PUBLISH=1 bash "${REPODIR}/tuned/package.sh" "${VARIANT}"
-
-# --- Verify what was packaged ---
-echo ""
-echo "Verify:"
-TARBALL="$(ls "${DIST_DIR}"/llama-cpp-*.tar.gz)"
-(cd "${DIST_DIR}" && sha256sum -c "$(basename "${TARBALL}").sha256" >/dev/null) \
-    && ok "sha256 sidecar matches" || fail "sha256 sidecar does not match"
-
-CHECK_DIR="$(mktemp -d)"
-trap 'rm -rf "${CHECK_DIR}"' EXIT
-tar -C "${CHECK_DIR}" -xzf "${TARBALL}"
-
-# Run with the toolkit's own lib dir first: the host's ld.so.conf follows the
-# /usr/local/cuda symlink, which can satisfy cudart/cublas from another version.
-version_line="$(env LD_LIBRARY_PATH="${GPU_TUNED_TOOLKIT_LIB_DIR}" "${CHECK_DIR}/llama-server-tuned" --version 2>&1 | grep -m1 '^version:' || true)"
-if [[ "${version_line}" == *"${LLAMA_TUNED_BUILD_NUMBER} (${LLAMA_TUNED_BUILD_COMMIT}"* ]]; then
-    ok "extracted llama-server-tuned reports ${version_line#version: }"
+# --- Package gate: made from this build after the tests, and nothing but release notes changed
+#     since the commit it was built from. ---
+TARBALL=""
+if [[ ! -f "${PKG_INFO}" ]]; then
+    fail "${PKG_INFO} not found; run tuned/package.sh ${VARIANT}"
 else
-    fail "extracted llama-server-tuned reports '${version_line}', expected ${LLAMA_TUNED_BUILD_NUMBER} (${LLAMA_TUNED_BUILD_COMMIT})"
+    TARBALL="${DIST_DIR}/$(sed -n 's/^tarball=//p' "${PKG_INFO}")"
+    grep -qxF "cuda_tag=${CUDA_TAG}" "${PKG_INFO}" || fail "package-info.txt is for another toolkit than ${CUDA_TAG}"
+    if [[ ! -f "${TARBALL}" || ! -f "${TARBALL}.sha256" ]]; then
+        fail "${TARBALL} or its .sha256 not found; run tuned/package.sh ${VARIANT}"
+    else
+        (cd "${DIST_DIR}" && sha256sum -c --quiet "$(basename "${TARBALL}").sha256") && ok "tarball matches its .sha256" || fail "tarball does not match its .sha256"
+        if [[ "${LLAMA_TUNED_TEST_LOG}" -nt "${TARBALL}" ]]; then
+            fail "the test log is newer than the tarball; package again after testing (tuned/package.sh ${VARIANT})"
+        else
+            ok "tarball was made after the tests"
+        fi
+    fi
+    changed="$(git -C "${REPODIR}" diff --name-only "${LLAMA_TUNED_BUILD_COMMIT}" HEAD -- . ':!tuned/releases' 2>/dev/null || echo "?")"
+    if [[ -n "${changed}" ]]; then
+        fail "files other than tuned/releases/ changed since the packaged commit ${LLAMA_TUNED_BUILD_COMMIT}: $(echo "${changed}" | head -3 | tr '\n' ' ')"
+    else
+        ok "only release notes changed since the packaged commit ${LLAMA_TUNED_BUILD_COMMIT}"
+    fi
 fi
 
-for f in "${CHECK_DIR}"/*; do
-    [[ -f "${f}" && ! -L "${f}" ]] || continue
-    readelf -h "${f}" >/dev/null 2>&1 || continue
-    if LD_LIBRARY_PATH="${GPU_TUNED_TOOLKIT_LIB_DIR}" ldd "${f}" 2>&1 | grep -q 'not found'; then
-        fail "$(basename "${f}"): unresolved dependency: $(LD_LIBRARY_PATH="${GPU_TUNED_TOOLKIT_LIB_DIR}" ldd "${f}" 2>&1 | grep 'not found' | head -1 | awk '{print $1}')"
-    fi
-    gpu_tuned_verify_toolkit_libs "${f}" || FAILURES=$((FAILURES + 1))
-    rp="$(readelf -d "${f}" 2>/dev/null | grep -oP '(?<=\((RUNPATH|RPATH)\)\s{1,10}Library (runpath|rpath): \[)[^\]]+' || true)"
-    if [[ -n "${rp}" && "${rp}" != '$ORIGIN' ]]; then
-        fail "$(basename "${f}"): RUNPATH is '${rp}', expected \$ORIGIN"
-    fi
-done
-[[ ${FAILURES} -eq 0 ]] && ok "every ELF resolves its libraries, RUNPATH is only \$ORIGIN"
-
+# --- Release notes: a tracked, reviewed file; not a draft. ---
+NOTES_FILE="${REPODIR}/tuned/releases/RELEASE_NOTES_${LLAMA_TUNED_BUILD_NUMBER}_${GPU_TUNED_VARIANT}_${CUDA_TAG}.md"
+if [[ ! -f "${NOTES_FILE}" ]]; then
+    fail "${NOTES_FILE} not found; tuned/package.sh writes a draft"
+elif grep -q 'DRAFT — not yet published' "${NOTES_FILE}"; then
+    fail "${NOTES_FILE} is still a draft (DRAFT line present)"
+else
+    ok "release notes ${NOTES_FILE##*/} reviewed"
+fi
 if [[ ${FAILURES} -gt 0 ]]; then
     echo "" >&2
-    echo "ERROR: ${FAILURES} verification check(s) failed; nothing was tagged or published." >&2
+    echo "ERROR: ${FAILURES} gate(s) failed; nothing was tagged or published." >&2
     exit 1
 fi
+
+RELEASE_TITLE="llama.cpp ${LLAMA_TUNED_BUILD_NUMBER} (${LLAMA_TUNED_BUILD_COMMIT}) — ${GPU_TUNED_HW_LABEL} (${CUDA_TAG})"
 
 # --- Publish (only with --publish) ---
 echo ""
 if [[ ${PUBLISH} -eq 0 ]]; then
     echo "Dry run complete. With --publish this would:"
     echo "  git tag ${SRC_TAG} $(git -C "${REPODIR}" rev-parse --short HEAD) && git push origin ${SRC_TAG}"
-    echo "  gh release create ${BIN_TAG} (target ${BRANCH}) with $(basename "${TARBALL}") + .sha256"
-    echo "Artifacts: ${DIST_DIR}"
+    echo "  gh release create ${BIN_TAG} (target ${BRANCH}), notes ${NOTES_FILE##*/}, with $(basename "${TARBALL}"), its .sha256 and the test log"
     exit 0
 fi
 
 echo "Tagging and publishing..."
 git -C "${REPODIR}" tag "${SRC_TAG}" HEAD
 git -C "${REPODIR}" push origin "${SRC_TAG}"
-gpu_tuned_publish_release "${REPO}" "${BIN_TAG}" "$(cat "${DIST_DIR}/release-title.txt")" \
-    "@${DIST_DIR}/release-notes.md" \
+gpu_tuned_publish_release "${REPO}" "${BIN_TAG}" "${RELEASE_TITLE}" \
+    "@${NOTES_FILE}" \
     "${TARBALL}#$(basename "${TARBALL}")" \
-    "${TARBALL}.sha256#$(basename "${TARBALL}").sha256"
+    "${TARBALL}.sha256#$(basename "${TARBALL}").sha256" \
+    "${LLAMA_TUNED_TEST_LOG}#Full test suite results (${GPU_TUNED_VARIANT})"
 echo ""
 echo "Done: https://github.com/${REPO}/releases/tag/${BIN_TAG}"

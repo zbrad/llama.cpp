@@ -1,14 +1,16 @@
 #!/bin/bash
-# tuned/package.sh <variant> — package an already-built (per
-# docs/gb10/README.md's `cmake -B build ...` command) build/bin/ output
-# into a tarball and publish it as a real GitHub release, so downstream
-# consumers (zbrad/ollama's fetch script) can pull a published build
-# instead of reaching into a local sibling checkout.
+# tuned/package.sh <variant> — package the build tuned/build.sh made (and tuned/full_test.sh
+# tested) for ONE variant and ONE CUDA toolkit into dist/<variant>/llama-cpp-<build>-<variant>-<cuda>.tar.gz
+# with a .sha256 sidecar and package-info.txt, then check the tarball as a consumer gets it
+# (extract, version, ldd, RUNPATH, toolkit libs). It packages only: no tag, no publishing.
+# tuned/release.sh publishes exactly these files, with the tracked release notes
+# (tuned/releases/RELEASE_NOTES_<build>_<variant>_<cuda>.md; a draft is written here if there is none).
+# Same split as raft, cuvs and faiss.
 #
-# Usage:
-#   cmake -B build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=121   # first
-#   cmake --build build --config Release -j$(nproc)                # first
-#   bash tuned/package.sh gb10                                      # then
+#   CUDA_TAG=cu133 bash tuned/build.sh gb10 && CUDA_TAG=cu133 bash tuned/full_test.sh gb10
+#   CUDA_TAG=cu133 bash tuned/package.sh gb10
+#   (review and commit the notes, remove the DRAFT banner)
+#   CUDA_TAG=cu133 bash tuned/release.sh gb10 [--publish]
 set -euo pipefail
 
 REPODIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -227,6 +229,56 @@ SHA_FILE="${TARBALL}.sha256"
 (cd "${DIST_DIR}" && sha256sum "$(basename "${TARBALL}")" > "$(basename "${SHA_FILE}")")
 echo "Checksum: $(basename "${SHA_FILE}") ($(cut -d' ' -f1 "${SHA_FILE}"))"
 
+# --- Check the tarball as a consumer gets it. Any failure leaves no package-info.txt, which
+#     release.sh requires. ---
+rm -f "${DIST_DIR}/package-info.txt"
+echo ""
+echo "Checking the tarball:"
+PKG_FAILURES=0
+pkg_fail() { echo "  FAIL: $*" >&2; PKG_FAILURES=$((PKG_FAILURES + 1)); }
+pkg_ok() { echo "  ok:   $*"; }
+(cd "${DIST_DIR}" && sha256sum -c --quiet "$(basename "${SHA_FILE}")") && pkg_ok "sha256 sidecar matches" || pkg_fail "sha256 sidecar does not match"
+CHECK_DIR="$(mktemp -d)"
+trap 'rm -rf "${STAGE}" "${OURS_MANIFEST}" "${SYSTEM_MANIFEST}" "${CHECK_DIR}"' EXIT
+tar -C "${CHECK_DIR}" -xzf "${TARBALL}"
+# Run with the toolkit's own lib dir first: the host's ld.so.conf follows the /usr/local/cuda
+# symlink, which can satisfy cudart/cublas from another version.
+version_line="$(env LD_LIBRARY_PATH="${GPU_TUNED_TOOLKIT_LIB_DIR}" "${CHECK_DIR}/llama-server-tuned" --version 2>&1 | grep -m1 '^version:' || true)"
+if [[ "${version_line}" == *"${LLAMA_TUNED_BUILD_NUMBER} (${LLAMA_TUNED_BUILD_COMMIT}"* ]]; then
+    pkg_ok "extracted llama-server-tuned reports ${version_line#version: }"
+else
+    pkg_fail "extracted llama-server-tuned reports '${version_line}', expected ${LLAMA_TUNED_BUILD_NUMBER} (${LLAMA_TUNED_BUILD_COMMIT})"
+fi
+for f in "${CHECK_DIR}"/*; do
+    [[ -f "${f}" && ! -L "${f}" ]] || continue
+    readelf -h "${f}" >/dev/null 2>&1 || continue
+    if LD_LIBRARY_PATH="${GPU_TUNED_TOOLKIT_LIB_DIR}" ldd "${f}" 2>&1 | grep -q 'not found'; then
+        pkg_fail "$(basename "${f}"): unresolved dependency: $(LD_LIBRARY_PATH="${GPU_TUNED_TOOLKIT_LIB_DIR}" ldd "${f}" 2>&1 | grep 'not found' | head -1 | awk '{print $1}')"
+    fi
+    gpu_tuned_verify_toolkit_libs "${f}" || PKG_FAILURES=$((PKG_FAILURES + 1))
+    rp="$(readelf -d "${f}" 2>/dev/null | grep -oP '(?<=\((RUNPATH|RPATH)\)\s{1,10}Library (runpath|rpath): \[)[^\]]+' || true)"
+    if [[ -n "${rp}" && "${rp}" != '$ORIGIN' ]]; then
+        pkg_fail "$(basename "${f}"): RUNPATH is '${rp}', expected \$ORIGIN"
+    fi
+done
+[[ ${PKG_FAILURES} -eq 0 ]] && pkg_ok "every ELF resolves its libraries, RUNPATH is only \$ORIGIN"
+if [[ ${PKG_FAILURES} -gt 0 ]]; then
+    echo "ERROR: ${PKG_FAILURES} package check(s) failed; not releasable." >&2
+    exit 1
+fi
+
+# What release.sh needs: the identity the binaries were built with (release.sh runs after notes-only
+# commits, when HEAD no longer matches it).
+cat > "${DIST_DIR}/package-info.txt" <<INFO
+tarball=$(basename "${TARBALL}")
+build_number=${LLAMA_TUNED_BUILD_NUMBER}
+build_commit=${LLAMA_TUNED_BUILD_COMMIT}
+cuda_tag=${CUDA_TAG}
+variant=${GPU_TUNED_VARIANT}
+INFO
+
+# --- Draft release notes, only if none exist yet. They are a tracked file, reviewed and committed
+#     (a notes-only commit) before release.sh; the DRAFT line must be removed first. ---
 # Redact any real hostname the notes text might mention, per a local,
 # gitignored mapping (tuned/hostname-aliases.local -- see the .example
 # file next to it). No-op if that file doesn't exist, so a fresh
@@ -243,31 +295,22 @@ redact_hostnames() {
     echo "${text}"
 }
 
-RELEASE_TAG="v${LLAMA_TUNED_BUILD_NUMBER}-${GPU_TUNED_VARIANT}-${CUDA_TAG}"
-RELEASE_TITLE="llama.cpp ${LLAMA_TUNED_BUILD_NUMBER} (${LLAMA_TUNED_BUILD_COMMIT}) — ${GPU_TUNED_HW_LABEL} (${CUDA_TAG})"
-COMPAT_NOTES="$(bash "${REPODIR}/tuned/compat-notes.sh" "${GPU_TUNED_VARIANT}" "${STAGE}")"
-RELEASE_NOTES="$(redact_hostnames "llama-server-tuned + llama-quantize-tuned + $(( ${#SO_FILES[@]} )) shared libraries, single-arch (sm_${GPU_TUNED_CUDA_ARCH}), built against CUDA ${CUDA_VER}. Includes the Ollama-format GGUF compatibility shim. Web UI: ${UI_BUILD% *} (audited dependency set, tarball sha256 ${UI_BUILD#* }). Easiest setup: curl -fsSL https://raw.githubusercontent.com/zbrad/llama.cpp/tuned-builds/install.sh | bash -- fetches this release, models/aliases.json, and llmsrv.sh for you (that URL always has the current installer; install.sh itself defaults to a pinned tuning-vN tag internally, see its own header). To deploy into an Ollama installation instead, see zbrad/ollama's tuned-builds fetch script, or manually: extract and copy llama-server + libs to your Ollama lib directory, symlinking llama-server into place (see zbrad/ollama's docs/local-llama-cpp.md).
-
-${COMPAT_NOTES}")"
-
-# LLAMA_TUNED_NO_PUBLISH=1 (set by tuned/release.sh) stops here and leaves
-# the tag, title and notes next to the tarball, so the caller can verify the
-# tarball and then publish exactly these files.
-if [[ -n "${LLAMA_TUNED_NO_PUBLISH:-}" ]]; then
-    printf '%s\n' "${RELEASE_TAG}" > "${DIST_DIR}/release-tag.txt"
-    printf '%s\n' "${RELEASE_TITLE}" > "${DIST_DIR}/release-title.txt"
-    printf '%s\n' "${RELEASE_NOTES}" > "${DIST_DIR}/release-notes.md"
-    echo ""
-    echo "LLAMA_TUNED_NO_PUBLISH set: packaged ${RELEASE_TAG}, not published."
-    exit 0
+NOTES_FILE="${REPODIR}/tuned/releases/RELEASE_NOTES_${LLAMA_TUNED_BUILD_NUMBER}_${GPU_TUNED_VARIANT}_${CUDA_TAG}.md"
+if [[ -f "${NOTES_FILE}" ]]; then
+    echo "Release notes exist: ${NOTES_FILE}"
+else
+    mkdir -p "${REPODIR}/tuned/releases"
+    COMPAT_NOTES="$(bash "${REPODIR}/tuned/compat-notes.sh" "${GPU_TUNED_VARIANT}" "${CHECK_DIR}")"
+    {
+        echo "<!-- DRAFT — not yet published: review, then delete this line and commit -->"
+        redact_hostnames "llama-server-tuned + llama-quantize-tuned + $(( ${#SO_FILES[@]} )) shared libraries, single-arch (sm_${GPU_TUNED_CUDA_ARCH}), built against CUDA ${CUDA_VER}. Includes the Ollama-format GGUF compatibility shim. Web UI: ${UI_BUILD% *} (audited dependency set, tarball sha256 ${UI_BUILD#* }). Easiest setup: curl -fsSL https://raw.githubusercontent.com/zbrad/llama.cpp/tuned-builds/install.sh | bash -- fetches this release, models/aliases.json, and llmsrv.sh for you (that URL always has the current installer; install.sh itself defaults to a pinned tuning-vN tag internally, see its own header). To deploy into an Ollama installation instead, see zbrad/ollama's tuned-builds fetch script, or manually: extract and copy llama-server + libs to your Ollama lib directory, symlinking llama-server into place (see zbrad/ollama's docs/local-llama-cpp.md)."
+        echo ""
+        echo "Tested: the ctest suite passed on this build (log attached), and the tarball was checked as extracted (version, ldd, RUNPATH, toolkit libraries)."
+        echo ""
+        echo "${COMPAT_NOTES}"
+    } > "${NOTES_FILE}"
+    echo "Wrote a DRAFT: ${NOTES_FILE}"
 fi
 
 echo ""
-echo "Publishing to GitHub release ${RELEASE_TAG}..."
-gpu_tuned_publish_release "zbrad/llama.cpp" "${RELEASE_TAG}" "${RELEASE_TITLE}" \
-    "${RELEASE_NOTES}" \
-    "${TARBALL}#$(basename "${TARBALL}")" \
-    "${SHA_FILE}#$(basename "${SHA_FILE}")"
-
-echo ""
-echo "Done: https://github.com/zbrad/llama.cpp/releases/tag/${RELEASE_TAG}"
+echo "Packaged ${TARBALL}. Not released: review/commit the notes, then tuned/release.sh ${GPU_TUNED_VARIANT}."

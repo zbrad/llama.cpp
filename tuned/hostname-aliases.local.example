@@ -1,4 +1,4 @@
-# tuned/package.sh's real-hostname -> public-alias mapping for release
+# tuned/release.sh's real-hostname -> public-alias mapping for release
 # notes. Copy this file to hostname-aliases.local (gitignored -- never
 # commit the real one) and fill in real names on each machine that
 # publishes releases. One "realname=alias" pair per line; blank lines
