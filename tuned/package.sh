@@ -81,6 +81,10 @@ gpu_tuned_verify_cuda_compat "${CUDA_SO}" "${CUDA_VER}"
 embed_build_info "${BIN_DIR}/llama-server"
 embed_build_info "${CUDA_SO}"
 
+# The web UI embedded in llama-server must be the audited llama-ui-tuned build, from the same
+# tools/ui sources as this checkout; never upstream's lockfile built or downloaded by CMake.
+UI_BUILD="$(bash "${REPODIR}/tuned/check-ui.sh" "${BUILD_DIR}")" || exit 1
+
 DIST_DIR="${REPODIR}/dist/${GPU_TUNED_VARIANT}"
 rm -rf "${DIST_DIR}"
 mkdir -p "${DIST_DIR}"
@@ -242,7 +246,7 @@ redact_hostnames() {
 RELEASE_TAG="v${LLAMA_TUNED_BUILD_NUMBER}-${GPU_TUNED_VARIANT}-${CUDA_TAG}"
 RELEASE_TITLE="llama.cpp ${LLAMA_TUNED_BUILD_NUMBER} (${LLAMA_TUNED_BUILD_COMMIT}) — ${GPU_TUNED_HW_LABEL} (${CUDA_TAG})"
 COMPAT_NOTES="$(bash "${REPODIR}/tuned/compat-notes.sh" "${GPU_TUNED_VARIANT}" "${STAGE}")"
-RELEASE_NOTES="$(redact_hostnames "llama-server-tuned + llama-quantize-tuned + $(( ${#SO_FILES[@]} )) shared libraries, single-arch (sm_${GPU_TUNED_CUDA_ARCH}), built against CUDA ${CUDA_VER}. Includes the Ollama-format GGUF compatibility shim. Easiest setup: curl -fsSL https://raw.githubusercontent.com/zbrad/llama.cpp/tuned-builds/install.sh | bash -- fetches this release, models/aliases.json, and llmsrv.sh for you (that URL always has the current installer; install.sh itself defaults to a pinned tuning-vN tag internally, see its own header). To deploy into an Ollama installation instead, see zbrad/ollama's tuned-builds fetch script, or manually: extract and copy llama-server + libs to your Ollama lib directory, symlinking llama-server into place (see zbrad/ollama's docs/local-llama-cpp.md).
+RELEASE_NOTES="$(redact_hostnames "llama-server-tuned + llama-quantize-tuned + $(( ${#SO_FILES[@]} )) shared libraries, single-arch (sm_${GPU_TUNED_CUDA_ARCH}), built against CUDA ${CUDA_VER}. Includes the Ollama-format GGUF compatibility shim. Web UI: ${UI_BUILD% *} (audited dependency set, tarball sha256 ${UI_BUILD#* }). Easiest setup: curl -fsSL https://raw.githubusercontent.com/zbrad/llama.cpp/tuned-builds/install.sh | bash -- fetches this release, models/aliases.json, and llmsrv.sh for you (that URL always has the current installer; install.sh itself defaults to a pinned tuning-vN tag internally, see its own header). To deploy into an Ollama installation instead, see zbrad/ollama's tuned-builds fetch script, or manually: extract and copy llama-server + libs to your Ollama lib directory, symlinking llama-server into place (see zbrad/ollama's docs/local-llama-cpp.md).
 
 ${COMPAT_NOTES}")"
 
