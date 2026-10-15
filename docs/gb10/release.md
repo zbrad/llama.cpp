@@ -32,10 +32,21 @@ counter and have been superseded by the date form; nothing parses the `N`.
    update the example URL in the header. Commit and push to `tuned-builds`.
    The tag will point at this commit, so the tagged tree contains the pin that
    names its own tag. `release.sh` does not edit the pin.
-2. **Dry run:**
+2. **Build and test** at the commit being released, for one toolkit:
 
    ```bash
-   bash tuned/release.sh gb10                 # or CUDA_TAG=cu133 / CUDA_VER=13.3
+   CUDA_TAG=cu133 bash tuned/build.sh gb10        # build-tuned/cu133/gb10/ (not the shared build/)
+   CUDA_TAG=cu133 bash tuned/full_test.sh gb10    # ctest, all labels; log beside the build tree
+   ```
+
+   `build.sh` needs the audited UI in `tools/ui/dist` (see `tuned/check-ui.sh`) and
+   refuses a build directory configured for another toolkit or checkout. `full_test.sh`
+   runs the whole ctest suite, including the `model` tests, which download small models
+   from Hugging Face.
+3. **Dry run** (no build; the test gate below needs the log from step 2):
+
+   ```bash
+   CUDA_TAG=cu133 bash tuned/release.sh gb10 --skip-build   # or CUDA_VER=13.3
    ```
 
    The toolkit is chosen from the definitions in `tuned/common-data/toolkits/`
@@ -43,12 +54,22 @@ counter and have been superseded by the date form; nothing parses the `N`.
    set it uses the highest defined toolkit and prints the available list and
    why, so the `cuNNN` part of the release name is never a surprise. For a
    gates-only check that builds nothing, add `--preflight-only`.
-3. **Publish** by re-running with `--publish`. It tags the source tag on
+4. **Publish** by re-running with `--publish`. It tags the source tag on
    `HEAD`, pushes it to `origin`, then creates the GitHub release targeting
    `tuned-builds`. This is the only step that changes anything remote.
 
-`--skip-build` reuses the existing build directory. The version check below
-still catches a stale binary.
+Without `--skip-build`, `release.sh` runs `tuned/build.sh` itself, and the test gate then
+stops it because the log predates that build: build, test, then release with `--skip-build`.
+The version check below still catches a stale binary.
+
+## Test gate
+
+After the preflight gates and the build step, and before packaging, the release needs a
+`tuned/full_test.sh` log for the same toolkit and variant
+(`build-tuned/<cuda-tag>/<variant>/TEST_RESULTS_<variant>.log`) that ends with
+"Full test suite summary: ctest passed" and is newer than every `llama-*` binary and
+`lib*.so*` in the build's `bin/`. `release.sh` never runs the tests itself, so a log from an
+earlier build, or from another toolkit's tree, cannot satisfy it.
 
 ## Preflight gates
 
@@ -66,9 +87,9 @@ built:
   release and the installed `libnccl2` package is the declared version, at the
   toolkit-versioned `CUDA_HOME`. The unversioned `/usr/local/cuda` symlink is
   never used, and an inherited `CUDA_HOME` that points elsewhere is rejected;
-- if the build directory is already configured, its CUDA compiler is that
-  toolkit's `nvcc`. The script never deletes a build directory; use another
-  `LLAMA_TUNED_BUILD_DIR` or remove it yourself.
+- if the build directory (`build-tuned/<cuda-tag>/<variant>/`, or `LLAMA_TUNED_BUILD_DIR`) is
+  already configured, its CUDA compiler is that toolkit's `nvcc`. The script never deletes a
+  build directory; remove it yourself.
 
 ## Verification
 
