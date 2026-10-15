@@ -150,7 +150,7 @@ if [[ ${SKIP_BUILD} -eq 0 ]]; then
     cmake -S "${REPODIR}" -B "${BUILD_DIR}" "${LLAMA_TUNED_CMAKE_FLAGS[@]}" \
         -DCMAKE_CUDA_COMPILER="${CUDA_HOME}/bin/nvcc" \
         -DCMAKE_CUDA_ARCHITECTURES="${GPU_TUNED_CUDA_ARCH//[a-z]/}"
-    cmake --build "${BUILD_DIR}" --config Release -j"$(nproc)"
+    cmake --build "${BUILD_DIR}" --config Release -j"$(gpu_tuned_jobs)"
 fi
 
 # --- Package (no publish) ---
