@@ -76,12 +76,9 @@ CUDA_SO="${BIN_DIR}/$(basename "$(find "${BIN_DIR}" -maxdepth 1 -name 'libggml-c
 gpu_tuned_verify_arch "${CUDA_SO}" "${GPU_TUNED_CUDA_ARCH}"
 gpu_tuned_verify_cuda_compat "${CUDA_SO}" "${CUDA_VER}"
 
-# Stamp build-info onto the two primary consumer-facing artifacts: the
-# server binary itself, and the GPU-specific .so (mirrors the other repos'
-# convention of stamping the arch-specific artifact, plus the binary users
-# actually invoke).
-embed_build_info "${BIN_DIR}/llama-server"
-embed_build_info "${CUDA_SO}"
+# (Build-info is stamped onto the STAGED copies below, never onto the build tree: stamping the
+# build tree rewrites the very files the test log is compared against, and release.sh's
+# "log newer than the build" gate would fail after every packaging run.)
 
 # The web UI embedded in llama-server must be the audited llama-ui-tuned build, from the same
 # tools/ui sources as this checkout; never upstream's lockfile built or downloaded by CMake.
@@ -116,6 +113,13 @@ for so in "${SO_FILES[@]}"; do
         cp -p "${so}" "${STAGE}/${soname}"
         echo "${soname}" >> "${OURS_MANIFEST}"
     fi
+done
+
+# Stamp build-info onto the two primary consumer-facing artifacts: the server binary itself, and
+# the GPU-specific .so (every staged copy of it, SONAME copy included).
+embed_build_info "${STAGE}/llama-server-tuned"
+for f in "${STAGE}"/libggml-cuda.so*; do
+    [[ -f "${f}" && ! -L "${f}" ]] && embed_build_info "${f}"
 done
 
 # Detect and stage system-library dependencies that CMake itself never

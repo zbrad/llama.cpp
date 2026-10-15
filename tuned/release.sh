@@ -133,12 +133,12 @@ if [[ -f "${BUILD_DIR}/CMakeCache.txt" ]]; then
     fi
 fi
 
-if [[ ${FAILURES} -gt 0 ]]; then
-    echo "" >&2
-    echo "ERROR: ${FAILURES} preflight gate(s) failed; nothing was built." >&2
-    exit 1
-fi
 if [[ ${PREFLIGHT_ONLY} -eq 1 ]]; then
+    if [[ ${FAILURES} -gt 0 ]]; then
+        echo "" >&2
+        echo "ERROR: ${FAILURES} preflight gate(s) failed." >&2
+        exit 1
+    fi
     echo ""
     echo "Preflight passed (--preflight-only)."
     exit 0
@@ -199,7 +199,7 @@ else
 fi
 if [[ ${FAILURES} -gt 0 ]]; then
     echo "" >&2
-    echo "ERROR: ${FAILURES} gate(s) failed; nothing was tagged or published." >&2
+    echo "ERROR: ${FAILURES} gate(s) failed (preflight, test, package, notes); nothing was tagged or published." >&2
     exit 1
 fi
 
