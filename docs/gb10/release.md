@@ -17,11 +17,19 @@ Two things are released together:
 | What | Name | Used by |
 |---|---|---|
 | Source tag | `tuning-YYYYMMDD` (e.g. `tuning-20261008`) | `install.sh` fetches `llmsrv.sh`, `models/aliases.json` etc. from this tag (`REPO_REF`) |
-| Binary release | `v<build>-<variant>-<cuda>` (e.g. `v11238-gb10-cu133`) | `install.sh` picks it by variant and CUDA version; zbrad/ollama's fetch script consumes the tarball |
+| Binary release | `v0.<YYYYMMDD>.<seq>-<variant>-<cuda>` (e.g. `v0.20261015.0-gb10-cu133`) | `install.sh` picks it by variant and CUDA version; zbrad/ollama's fetch script consumes the tarball |
 
-`<build>` is `git rev-list --count HEAD`, the same value `llama-server
---version` reports. Do not change the binary tag shape without changing the
-pattern in `install.sh` (`^v[0-9]+-<variant>-cu[0-9]+$`).
+The date is the UTC date of `HEAD`'s commit and `<seq>` is the lowest unused sequence for that
+date among the repo's release tags (`0` for the first build of the day, written in full), both
+from `gpu_tuned_allocate_date_label` in tuned-common (see its `docs/VERSIONING.md`).
+`tuned/package.sh` allocates the label once and records it in `package-info.txt`; everything
+after reads it from there. `GPU_TUNED_LABEL_SEQ=<n>` chooses the sequence without reading
+`origin`'s tags. The commit count (`llama-server --version`'s "build N") is no longer part of
+the name: it was unreliable as an identity. It is only checked, at packaging, against the
+binary's own report.
+
+Older release tags `v<build>-<variant>-<cuda>` (e.g. `v10931-gb10-cu133`) stay as they are;
+`install.sh` accepts both shapes and prefers any date-label tag over a counter tag.
 
 Older source tags `tuning-vN` exist and keep working. They were a hand-kept
 counter and have been superseded by the date form; nothing parses the `N`.
@@ -47,11 +55,11 @@ counter and have been superseded by the date form; nothing parses the `N`.
    from Hugging Face. `package.sh` only packages: it never tags or publishes. It then
    checks the tarball as extracted (below) and, if there are no release notes for this
    build yet, writes a draft.
-3. **Review and commit the release notes**, `tuned/releases/RELEASE_NOTES_<build>_<variant>_<cuda>.md`:
+3. **Review and commit the release notes**, `tuned/releases/RELEASE_NOTES_0.<date>.<seq>_<variant>_<cuda>.md`:
    check the text (the "Tested on" section comes from `tuned/tested-drivers.txt` and names
    older releases), delete the DRAFT line, commit and push. This must be a notes-only
-   commit: any other change after packaging means rebuilding, testing and packaging again,
-   because the binaries carry the build number of the commit they were built from.
+   commit: any other change after packaging means building, testing and packaging again (the
+   gate refuses it, and the binaries carry the build number of the commit they were built from).
 4. **Dry run:**
 
    ```bash
@@ -66,8 +74,8 @@ counter and have been superseded by the date form; nothing parses the `N`.
    its `.sha256`, the notes file and the test log. This is the only step that changes
    anything remote.
 
-`release.sh` never builds, tests or packages. The release is named for the commit in
-`package-info.txt`, not `HEAD`, so the notes commit does not change the tag.
+`release.sh` never builds, tests or packages. The release is named by the label in
+`package-info.txt`, not by `HEAD`, so the notes commit does not change the tag.
 
 ## Gates
 
@@ -82,7 +90,7 @@ Preflight:
 - `install.sh` `REPO_REF` is `tuning-YYYYMMDD`, dated today, and that tag does not exist
   locally or on `origin` (step 1 bumps it; `install.sh` still pins the old `tuning-vN`
   form until then);
-- the binary release `v<build>-<variant>-<cuda>` does not already exist;
+- the binary release tag recorded in `package-info.txt` does not already exist;
 - the selected toolkit matches its definition: `nvcc` reports the declared release and the
   installed `libnccl2` is the declared version, at the toolkit-versioned `CUDA_HOME`. The
   unversioned `/usr/local/cuda` symlink is never used;
