@@ -1,23 +1,21 @@
 #!/bin/bash
 # tuned/release.sh <variant> [--publish] [--preflight-only] — publish the tarball tuned/package.sh
 # made, with the tracked release notes, after the gates. Same split as raft, cuvs and faiss:
-#   tuned/build.sh -> tuned/full_test.sh -> tuned/package.sh -> (review + commit the notes) -> this.
-# Without --publish it is a dry run: every gate really runs, nothing is tagged, pushed or published.
+#   tuned/build.sh -> tuned/full_test.sh -> tuned/package.sh -> tuned/smoke_test.sh
+#   -> (review + commit the notes) -> this.
+# Without --publish it is a dry run: every gate really runs, nothing is published.
 #
-# Gates: preflight (clean tree, branch, origin, gh, install.sh pin, toolkit); a passing full_test.sh
-# log newer than the build; a package made from that build after the tests; only release notes
-# changed since the package's commit; the notes are not a DRAFT.
+# Gates: preflight (clean tree, branch, origin, gh, toolkit, tag free); a passing full_test.sh log newer
+# than the build; a package made from that build after the tests; a passing smoke test (install.sh run on
+# that tarball) newer than it; only release notes changed since the package's commit; the notes are not a
+# DRAFT.
 #
-# The release is named by the date label package.sh allocated (UTC date of HEAD's commit plus a
-# sequence for that date): the native tag v0.<date>.<seq>-<variant>-<cuda>, recorded in
-# package-info.txt, so a notes-only commit after packaging does not change it. The build number
-# is only what llama-server --version reports.
-#
-# Two things get released together:
-#   - the source tag  tuning-YYYYMMDD  (what install.sh's REPO_REF pins)
-#   - the binary release  v0.<date>.<seq>-<variant>-<cuda>  (what install.sh fetches)
-# The source tag name is read from install.sh's REPO_REF default, bumped by hand and committed
-# before releasing. The CUDA toolkit is chosen as in build.sh (CUDA_TAG / CUDA_VER).
+# One identity per release: the date label package.sh allocated (UTC date of HEAD's commit plus a sequence
+# for that date), as the native tag v0.<date>.<seq>-<variant>-<cuda>, recorded in package-info.txt, so a
+# notes-only commit after packaging does not change it. gh creates that tag on the tuned-builds head, and
+# install.sh fetches llmsrv.sh and models/aliases.json from it: there is no separate source tag and no pin to
+# bump. The build number is only what llama-server --version reports. The CUDA toolkit is chosen as in
+# build.sh (CUDA_TAG / CUDA_VER).
 #
 #   CUDA_TAG=cu133 bash tuned/release.sh gb10                # dry run
 #   CUDA_TAG=cu133 bash tuned/release.sh gb10 --publish      # for real
@@ -54,12 +52,10 @@ BRANCH="tuned-builds"
 BUILD_DIR="${LLAMA_TUNED_BUILD_DIR}"   # from env.sh: build-tuned/<cuda-tag>/<variant>
 DIST_DIR="${REPODIR}/dist/${GPU_TUNED_VARIANT}"
 BIN_TAG="${BIN_TAG:-}"   # from package-info.txt; the date label was allocated when packaging
-SRC_TAG="$(sed -n 's/^REPO_REF="\${REPO_REF:-\(.*\)}"$/\1/p' "${REPODIR}/install.sh" | head -1)"
 
 echo "===================================================="
 echo "llama.cpp ${GPU_TUNED_HW_LABEL} Release  ($([[ ${PUBLISH} -eq 1 ]] && echo PUBLISH || echo "dry run"))"
 echo "===================================================="
-echo "  Source tag  : ${SRC_TAG:-<not found in install.sh>}"
 echo "  Binary tag  : ${BIN_TAG:-<no package yet>}"
 echo "  Build       : ${LLAMA_TUNED_BUILD_NUMBER} (${LLAMA_TUNED_BUILD_COMMIT})"
 echo "  CUDA        : ${CUDA_TAG}"
@@ -97,22 +93,6 @@ if gh auth status >/dev/null 2>&1; then
     ok "gh authenticated"
 else
     fail "gh is not authenticated"
-fi
-
-if [[ "${SRC_TAG}" =~ ^tuning-([0-9]{8})$ ]]; then
-    if [[ "${BASH_REMATCH[1]}" == "$(date +%Y%m%d)" ]]; then
-        ok "install.sh pin ${SRC_TAG} is dated today"
-    else
-        fail "install.sh pin ${SRC_TAG} is not dated today ($(date +%Y%m%d)); re-bump REPO_REF and commit"
-    fi
-    if git -C "${REPODIR}" rev-parse -q --verify "refs/tags/${SRC_TAG}" >/dev/null \
-        || [[ -n "$(git -C "${REPODIR}" ls-remote --tags origin "${SRC_TAG}")" ]]; then
-        fail "source tag ${SRC_TAG} already exists locally or on origin"
-    else
-        ok "source tag ${SRC_TAG} is free"
-    fi
-else
-    fail "install.sh REPO_REF '${SRC_TAG}' is not of the form tuning-YYYYMMDD"
 fi
 
 if [[ -z "${BIN_TAG}" ]]; then
@@ -184,6 +164,16 @@ else
         else
             ok "tarball was made after the tests"
         fi
+        SMOKE_LOG="${DIST_DIR}/SMOKE_RESULTS_${GPU_TUNED_VARIANT}.log"
+        if [[ ! -f "${SMOKE_LOG}" ]]; then
+            fail "${SMOKE_LOG} not found; run tuned/smoke_test.sh ${VARIANT}"
+        elif [[ "${TARBALL}" -nt "${SMOKE_LOG}" ]]; then
+            fail "${TARBALL} is newer than the smoke test log; re-run tuned/smoke_test.sh ${VARIANT}"
+        elif ! grep -q "Smoke test summary: passed" "${SMOKE_LOG}"; then
+            fail "${SMOKE_LOG} does not show a pass"
+        else
+            ok "smoke test (install.sh on this tarball) passed"
+        fi
     fi
     changed="$(git -C "${REPODIR}" diff --name-only "${LLAMA_TUNED_BUILD_COMMIT}" HEAD -- . ':!tuned/releases' 2>/dev/null || echo "?")"
     if [[ -n "${changed}" ]]; then
@@ -214,18 +204,16 @@ RELEASE_TITLE="llama.cpp ${BIN_TAG#v} (build ${LLAMA_TUNED_BUILD_NUMBER}, ${LLAM
 echo ""
 if [[ ${PUBLISH} -eq 0 ]]; then
     echo "Dry run complete. With --publish this would:"
-    echo "  git tag ${SRC_TAG} $(git -C "${REPODIR}" rev-parse --short HEAD) && git push origin ${SRC_TAG}"
     echo "  gh release create ${BIN_TAG} (target ${BRANCH}), notes ${NOTES_FILE##*/}, with $(basename "${TARBALL}"), its .sha256 and the test log"
     exit 0
 fi
 
-echo "Tagging and publishing..."
-git -C "${REPODIR}" tag "${SRC_TAG}" HEAD
-git -C "${REPODIR}" push origin "${SRC_TAG}"
+echo "Publishing..."
 gpu_tuned_publish_release "${REPO}" "${BIN_TAG}" "${RELEASE_TITLE}" \
     "@${NOTES_FILE}" \
     "${TARBALL}#$(basename "${TARBALL}")" \
     "${TARBALL}.sha256#$(basename "${TARBALL}").sha256" \
-    "${LLAMA_TUNED_TEST_LOG}#Full test suite results (${GPU_TUNED_VARIANT})"
+    "${LLAMA_TUNED_TEST_LOG}#Full test suite results (${GPU_TUNED_VARIANT})" \
+    "${SMOKE_LOG}#Package install and smoke test results (${GPU_TUNED_VARIANT})"
 echo ""
 echo "Done: https://github.com/${REPO}/releases/tag/${BIN_TAG}"

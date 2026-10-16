@@ -9,6 +9,7 @@
 #
 #   CUDA_TAG=cu133 bash tuned/build.sh gb10 && CUDA_TAG=cu133 bash tuned/full_test.sh gb10
 #   CUDA_TAG=cu133 bash tuned/package.sh gb10
+#   CUDA_TAG=cu133 bash tuned/smoke_test.sh gb10     # installs the package with install.sh and uses it
 #   (review and commit the notes, remove the DRAFT banner)
 #   CUDA_TAG=cu133 bash tuned/release.sh gb10 [--publish]
 set -euo pipefail
@@ -288,6 +289,7 @@ build_number=${LLAMA_TUNED_BUILD_NUMBER}
 build_commit=${LLAMA_TUNED_BUILD_COMMIT}
 cuda_tag=${CUDA_TAG}
 variant=${GPU_TUNED_VARIANT}
+sha256=$(cut -d" " -f1 "${SHA_FILE}")
 INFO
 
 # --- Draft release notes, only if none exist yet. They are a tracked file, reviewed and committed
@@ -326,4 +328,4 @@ else
 fi
 
 echo ""
-echo "Packaged ${TARBALL}. Not released: review/commit the notes, then tuned/release.sh ${GPU_TUNED_VARIANT}."
+echo "Packaged ${TARBALL}. Not released: run tuned/smoke_test.sh ${GPU_TUNED_VARIANT} (installs it and uses it), review/commit the notes, then tuned/release.sh ${GPU_TUNED_VARIANT}."

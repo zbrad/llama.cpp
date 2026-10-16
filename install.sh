@@ -6,7 +6,7 @@
 # directory.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/zbrad/llama.cpp/tuning-v30/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/zbrad/llama.cpp/tuned-builds/install.sh | bash
 #   # a specific directory (current folder, or anywhere else):
 #   curl -fsSL .../install.sh | bash -s -- --dir .
 #   # skip the post-install tiny-model completion test:
@@ -17,15 +17,11 @@
 #   # or, from a checkout:
 #   bash install.sh [--dir <path>]
 #
-# This script itself, models/aliases.json, and llmsrv.sh are all fetched
-# from the same pinned "tuning-vN" tag (REPO_REF below) -- a lightweight
-# tag bumped only when this tooling actually changes (commits ahead of
-# upstream/master that touch tuned/, models/aliases.json, or install.sh
-# itself), not on every unrelated upstream sync tuned-builds also carries.
-# Pin an exact tag/commit yourself via REPO_REF if you need full
-# reproducibility beyond the default. The GPU binary release is a
-# completely separate axis -- always resolved fresh via the GitHub API by
-# variant+CUDA (or pinned via LLAMA_CPP_TAG), independent of REPO_REF.
+# The GPU release is resolved first, by variant + CUDA version (or pinned via
+# LLAMA_CPP_TAG). models/aliases.json, the chat templates and llmsrv.sh are then
+# fetched from that same release tag, so they are exactly the files the release
+# was made from (the release tag is created on the tuned-builds branch head at
+# release time). Set REPO_REF to any tag/commit to take them from somewhere else.
 #
 # Default install dir is $XDG_DATA_HOME/llmsrv (usually
 # ~/.local/share/llmsrv) -- this matches llmsrv.sh's own hardcoded
@@ -42,8 +38,12 @@
 # Env overrides:
 #   INSTALL_DIR                same as --dir
 #   LLAMA_CPP_VARIANT/LLAMA_CPP_CUDA_VERSION/LLAMA_CPP_TAG  (GPU release matching)
-#   REPO_REF                    tag/commit to fetch aliases.json/llmsrv.sh/
-#                                this script's own updates from (default: see below)
+#   REPO_REF                    tag/commit to fetch aliases.json/llmsrv.sh/templates
+#                                from (default: the release tag itself)
+#   LLAMA_CPP_LOCAL_TARBALL     test an unpublished release: install this tarball (its
+#   LLAMA_CPP_LOCAL_REPO         .sha256 sidecar beside it is verified) and copy the helper
+#                                files from this checkout, with no GitHub access. Both are
+#                                required together; used by tuned/smoke_test.sh
 #   HF_HUB_CACHE                default for --hf-cache (a Hugging Face hub cache,
 #                                the directory holding models--<org>--<name>/)
 #
@@ -56,8 +56,12 @@
 set -euo pipefail
 
 REPO="zbrad/llama.cpp"
-REPO_REF="${REPO_REF:-tuning-v30}"
-RAW_BASE="https://raw.githubusercontent.com/${REPO}/${REPO_REF}"
+REPO_REF="${REPO_REF:-}"   # default: the release tag, set once it is resolved
+LOCAL_TARBALL="${LLAMA_CPP_LOCAL_TARBALL:-}"
+LOCAL_REPO="${LLAMA_CPP_LOCAL_REPO:-}"
+if [ -n "$LOCAL_TARBALL" ] || [ -n "$LOCAL_REPO" ]; then
+    [ -f "$LOCAL_TARBALL" ] && [ -d "$LOCAL_REPO/models" ] || { echo "ERROR: LLAMA_CPP_LOCAL_TARBALL must be a file and LLAMA_CPP_LOCAL_REPO a checkout (both are required together)." >&2; exit 1; }
+fi
 
 DEFAULT_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/llmsrv"
 INSTALL_DIR="${INSTALL_DIR:-$DEFAULT_DIR}"
@@ -149,7 +153,12 @@ newest_tag() {
 # the host's reported minor (confirmed live: node-2's driver reports
 # "CUDA Version: 13.0" yet already runs cu133 releases fine -- an
 # X.y-must-be-<=-host-minor gate here would wrongly reject that) ---
-if [ -z "$EXACT_TAG" ]; then
+if [ -n "$LOCAL_TARBALL" ]; then
+    # An unpublished release under test: the tag comes from the tarball's own name.
+    base="$(basename "$LOCAL_TARBALL")"
+    TAG="v${base#llama-cpp-}"; TAG="${TAG%.tar.gz}"
+    [[ "$TAG" =~ ^v0\.[0-9]{8}\.[0-9]+-${VARIANT}-cu[0-9]+$ ]] || die "$base is not a llama-cpp-0.<date>.<seq>-${VARIANT}-cu<N>.tar.gz package"
+elif [ -z "$EXACT_TAG" ]; then
     candidates="$(
         curl -fsSL "https://api.github.com/repos/${REPO}/releases?per_page=100" \
             | grep -o '"tag_name": *"[^"]*"' \
@@ -174,12 +183,24 @@ else
     TAG="$EXACT_TAG"
 fi
 status "Release: $TAG"
+REPO_REF="${REPO_REF:-$TAG}"
+RAW_BASE="https://raw.githubusercontent.com/${REPO}/${REPO_REF}"
+if [ -n "$LOCAL_REPO" ]; then status "Helper files: from the checkout ${LOCAL_REPO} (local test)"; else status "Helper files: from ${REPO_REF}"; fi
 
-asset_name="$(
-    curl -fsSL "https://api.github.com/repos/${REPO}/releases/tags/${TAG}" \
-        | grep -o '"name": *"[^"]*\.tar\.gz"' | sed 's/.*"name": *"\([^"]*\)"/\1/' | head -1 || true
-)"
-[ -n "$asset_name" ] || die "no .tar.gz asset found in release $TAG"
+# fetch_file <path in the repo> <destination>: the file at REPO_REF, or from the local checkout.
+fetch_file() {
+    if [ -n "$LOCAL_REPO" ]; then cp "${LOCAL_REPO}/$1" "$2"; else curl -fsSL "${RAW_BASE}/$1" -o "$2"; fi
+}
+
+if [ -n "$LOCAL_TARBALL" ]; then
+    asset_name="$(basename "$LOCAL_TARBALL")"
+else
+    asset_name="$(
+        curl -fsSL "https://api.github.com/repos/${REPO}/releases/tags/${TAG}" \
+            | grep -o '"name": *"[^"]*\.tar\.gz"' | sed 's/.*"name": *"\([^"]*\)"/\1/' | head -1 || true
+    )"
+    [ -n "$asset_name" ] || die "no .tar.gz asset found in release $TAG"
+fi
 
 WORK_DIR="$(mktemp -d)"
 SERVER_PID=""
@@ -187,14 +208,22 @@ trap 'if [ -n "$SERVER_PID" ]; then kill "$SERVER_PID" 2>/dev/null || true; fi; 
 
 sha_name="${asset_name}.sha256"
 have_sha=false
-if curl -fsSL "https://github.com/${REPO}/releases/download/${TAG}/${sha_name}" -o "$WORK_DIR/release.tar.gz.sha256" 2>/dev/null; then
+if [ -n "$LOCAL_TARBALL" ]; then
+    [ -f "${LOCAL_TARBALL}.sha256" ] || die "${LOCAL_TARBALL}.sha256 not found (a local test needs the sidecar tuned/package.sh writes)"
+    cp "${LOCAL_TARBALL}.sha256" "$WORK_DIR/release.tar.gz.sha256"; have_sha=true
+elif curl -fsSL "https://github.com/${REPO}/releases/download/${TAG}/${sha_name}" -o "$WORK_DIR/release.tar.gz.sha256" 2>/dev/null; then
     have_sha=true
 else
     status "WARNING: no checksum (${sha_name}) published for this release -- skipping integrity verification"
 fi
 
-status "Downloading $asset_name..."
-curl -fsSL "https://github.com/${REPO}/releases/download/${TAG}/${asset_name}" -o "$WORK_DIR/release.tar.gz"
+if [ -n "$LOCAL_TARBALL" ]; then
+    status "Using the local package $asset_name..."
+    cp "$LOCAL_TARBALL" "$WORK_DIR/release.tar.gz"
+else
+    status "Downloading $asset_name..."
+    curl -fsSL "https://github.com/${REPO}/releases/download/${TAG}/${asset_name}" -o "$WORK_DIR/release.tar.gz"
+fi
 
 if $have_sha; then
     expected="$(awk '{print $1}' "$WORK_DIR/release.tar.gz.sha256")"
@@ -282,7 +311,7 @@ fi
 # --- Fetch models/aliases.json + only the templates it references ---
 status "Fetching models/aliases.json..."
 mkdir -p "$INSTALL_DIR/models/templates"
-curl -fsSL "${RAW_BASE}/models/aliases.json" -o "$INSTALL_DIR/models/aliases.json"
+fetch_file models/aliases.json "$INSTALL_DIR/models/aliases.json"
 
 templates="$(grep -oE '"chat_template_file": *"[^"]*"' "$INSTALL_DIR/models/aliases.json" \
     | sed -E 's/.*"([^"]+)"$/\1/' | sort -u)"
@@ -290,7 +319,7 @@ copied=0
 while IFS= read -r rel; do
     [ -n "$rel" ] || continue
     mkdir -p "$(dirname "$INSTALL_DIR/$rel")"
-    if curl -fsSL "${RAW_BASE}/${rel}" -o "$INSTALL_DIR/${rel}"; then
+    if fetch_file "${rel}" "$INSTALL_DIR/${rel}"; then
         copied=$((copied + 1))
     else
         echo "warning: failed to fetch ${rel}, skipping" >&2
@@ -334,7 +363,7 @@ fi
 
 # --- Fetch llmsrv.sh itself ---
 status "Fetching llmsrv.sh..."
-curl -fsSL "${RAW_BASE}/tuned/llmsrv.sh" -o "$INSTALL_DIR/llmsrv.sh"
+fetch_file tuned/llmsrv.sh "$INSTALL_DIR/llmsrv.sh"
 chmod +x "$INSTALL_DIR/llmsrv.sh"
 
 echo ""
