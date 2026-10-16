@@ -50,6 +50,15 @@ RELEASE_TAG="$(gpu_tuned_native_tag "${GPU_TUNED_VARIANT}" "${CUDA_TAG}" "${LABE
 mkdir -p "${BUILD_DIR}"
 printf '%s\n' "${RELEASE_TAG}" > "${BUILD_DIR}/release-label"
 
+# NCCL from a pinned zbrad/nccl release (tuned/nccl.pins): hand ggml's FindNCCL the static library and headers
+# directly (it only searches for libnccl.so), and keep NCCL's symbols out of libggml-cuda's dynamic table so a
+# second NCCL in the same process (pytorch's) cannot interpose on this one.
+NCCL_ARGS=()
+if [[ -n "${LLAMA_TUNED_NCCL_DIR}" ]]; then
+    NCCL_ARGS=("-DNCCL_LIBRARY=${LLAMA_TUNED_NCCL_DIR}/lib/libnccl_static.a" "-DNCCL_INCLUDE_DIR=${LLAMA_TUNED_NCCL_DIR}/include"
+               "-DCMAKE_SHARED_LINKER_FLAGS=-Wl,--exclude-libs,libnccl_static.a")
+fi
+
 LAUNCHER=()
 if command -v ccache >/dev/null; then
     mkdir -p "${CCACHE_DIR}"
@@ -60,7 +69,7 @@ echo "Building llama.cpp ${RELEASE_TAG} (commit ${LLAMA_TUNED_BUILD_COMMIT}): ${
 echo "  Build dir : ${BUILD_DIR}"
 # CMake takes the bare arch (121) and upgrades it to 121a itself.
 cmake -S "${REPODIR}" -B "${BUILD_DIR}" "${LLAMA_TUNED_CMAKE_FLAGS[@]}" "${LAUNCHER[@]}" \
-    "-DLLAMA_TUNED_RELEASE=${RELEASE_TAG}" \
+    "-DLLAMA_TUNED_RELEASE=${RELEASE_TAG}" "${NCCL_ARGS[@]}" \
     -DCMAKE_CUDA_COMPILER="${CUDA_HOME}/bin/nvcc" \
     -DCMAKE_CUDA_ARCHITECTURES="${GPU_TUNED_CUDA_ARCH//[a-z]/}"
 cmake --build "${BUILD_DIR}" --config Release -j"$(gpu_tuned_jobs)"

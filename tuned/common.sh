@@ -326,7 +326,7 @@ gpu_tuned_verify_toolkit() {
         echo "ERROR: gpu_tuned_verify_toolkit: ${CUDA_HOME}/bin/nvcc reports release '${found}', toolkit ${TOOLKIT_ID} declares ${TOOLKIT_NVCC_RELEASE}." >&2
         return 1
     fi
-    if [[ -n "${TOOLKIT_NCCL_VERSION:-}" ]]; then
+    if [[ -n "${TOOLKIT_NCCL_VERSION:-}" && "${TOOLKIT_NCCL_VERSION}" != none ]]; then
         if ! command -v dpkg-query >/dev/null 2>&1; then
             echo "WARNING: gpu_tuned_verify_toolkit: dpkg-query not found; NCCL ${TOOLKIT_NCCL_VERSION} not checked." >&2
         else
@@ -338,7 +338,11 @@ gpu_tuned_verify_toolkit() {
             fi
         fi
     fi
-    echo "OK: toolkit ${TOOLKIT_ID}: nvcc ${found} at ${CUDA_HOME}${TOOLKIT_NCCL_VERSION:+, libnccl2 ${TOOLKIT_NCCL_VERSION}}"
+    if [[ "${TOOLKIT_NCCL_VERSION:-}" == none ]]; then
+        echo "OK: toolkit ${TOOLKIT_ID}: nvcc ${found} at ${CUDA_HOME}, no system NCCL (a pinned zbrad/nccl release is the only NCCL)"
+    else
+        echo "OK: toolkit ${TOOLKIT_ID}: nvcc ${found} at ${CUDA_HOME}${TOOLKIT_NCCL_VERSION:+, libnccl2 ${TOOLKIT_NCCL_VERSION}}"
+    fi
 }
 
 # gpu_tuned_verify_toolkit_libs <elf>... — resolves each file's libraries
@@ -1038,6 +1042,75 @@ for arg in sys.argv[2:]:
         bad = 1
 sys.exit(bad)
 PY
+}
+
+# gpu_tuned_fetch_nccl_release <release-tag> <dest-dir> -- download a zbrad/nccl release, check the tarball
+# against its published sha256, check its BUILD_INFO names the tag, and extract it into <dest-dir> (the
+# tarball's top directory is stripped, so <dest-dir>/lib/libnccl_static.a and <dest-dir>/include/nccl.h
+# exist). Idempotent: a <dest-dir> already holding that tag is left alone. Needs `gh` logged in. Never
+# extracts a tag whose files do not match their checksum, never leaves a half-extracted <dest-dir>, and
+# refuses to replace a destination whose path has no /nccl/ component. pytorch's tuned/fetch_nccl.sh is the
+# same logic as a script; new callers use this.
+gpu_tuned_fetch_nccl_release() {
+    local tag="${1:-}" dest="${2:-}" work tarball top
+    [[ -n "${tag}" && -n "${dest}" ]] || { echo "ERROR: gpu_tuned_fetch_nccl_release: need <release-tag> <dest-dir>." >&2; return 1; }
+    [[ "${dest}" == */nccl/* ]] || { echo "ERROR: gpu_tuned_fetch_nccl_release: refusing destination ${dest} (no /nccl/ component)." >&2; return 1; }
+    if [[ -f "${dest}/.tag" && "$(cat "${dest}/.tag")" == "${tag}" && -f "${dest}/lib/libnccl_static.a" ]]; then
+        return 0
+    fi
+    command -v gh >/dev/null || { echo "ERROR: gpu_tuned_fetch_nccl_release: needs the gh CLI to download zbrad/nccl ${tag}." >&2; return 1; }
+    work="$(mktemp -d)"
+    echo "[nccl] downloading zbrad/nccl ${tag}" >&2
+    if ! gh release download "${tag}" --repo zbrad/nccl --pattern '*.tar.gz' --pattern '*.tar.gz.sha256' --dir "${work}" >&2; then
+        rm -rf "${work}"; echo "ERROR: gpu_tuned_fetch_nccl_release: could not download zbrad/nccl ${tag}." >&2; return 1
+    fi
+    tarball="$(find "${work}" -maxdepth 1 -name '*.tar.gz' | head -1)"
+    if [[ ! -f "${tarball}" || ! -f "${tarball}.sha256" ]]; then
+        rm -rf "${work}"; echo "ERROR: gpu_tuned_fetch_nccl_release: zbrad/nccl ${tag} has no tarball and .sha256 asset pair." >&2; return 1
+    fi
+    if ! (cd "${work}" && sha256sum -c "$(basename "${tarball}").sha256" >/dev/null 2>&1); then
+        rm -rf "${work}"; echo "ERROR: gpu_tuned_fetch_nccl_release: the tarball does not match its published sha256." >&2; return 1
+    fi
+    tar -xzf "${tarball}" -C "${work}" || { rm -rf "${work}"; return 1; }
+    top="$(find "${work}" -mindepth 1 -maxdepth 1 -type d | head -1)"
+    if ! grep -q "^tag=${tag}$" "${top}/BUILD_INFO" 2>/dev/null; then
+        rm -rf "${work}"; echo "ERROR: gpu_tuned_fetch_nccl_release: BUILD_INFO in the tarball does not say tag=${tag}." >&2; return 1
+    fi
+    if [[ ! -f "${top}/lib/libnccl_static.a" || ! -f "${top}/include/nccl.h" ]]; then
+        rm -rf "${work}"; echo "ERROR: gpu_tuned_fetch_nccl_release: the tarball lacks lib/libnccl_static.a or include/nccl.h." >&2; return 1
+    fi
+    echo "${tag}" > "${top}/.tag"
+    mkdir -p "$(dirname "${dest}")"
+    rm -rf -- "${dest}"
+    mv "${top}" "${dest}"
+    rm -rf "${work}"
+    echo "[nccl] ${tag} verified and extracted to ${dest}" >&2
+}
+
+# gpu_tuned_verify_bundled_cuda_flavor <cuda-version> <file>... -- for each system file a package is about to
+# bundle, find the Debian package that owns it (dpkg -S) and refuse if that package carries a CUDA flavour
+# (+cuda<X.Y> in its version) other than <cuda-version>. A NCCL built for CUDA 13.3 shipped in a 13.4 package
+# is exactly this. A file no package owns, or a package with no +cuda flavour, is not judged here (the
+# toolkit file's pinned versions and the package gate cover those). Fails loudly naming file, package and both
+# flavours. Never installs or changes anything.
+gpu_tuned_verify_bundled_cuda_flavor() {
+    local want="${1:-}" f owner pkg ver flavour rc=0
+    shift || true
+    [[ "${want}" =~ ^[0-9]+\.[0-9]+$ ]] || { echo "ERROR: gpu_tuned_verify_bundled_cuda_flavor: <cuda-version> must look like 13.4, got '${want}'." >&2; return 1; }
+    command -v dpkg >/dev/null 2>&1 || { echo "WARNING: gpu_tuned_verify_bundled_cuda_flavor: dpkg not found; bundled CUDA flavours not checked." >&2; return 0; }
+    for f in "$@"; do
+        owner="$(dpkg -S "$(readlink -f "${f}")" 2>/dev/null | head -1)" || true
+        pkg="${owner%%:*}"
+        [[ -n "${owner}" && -n "${pkg}" ]] || continue
+        ver="$(dpkg-query -W -f='${Version}' "${pkg}" 2>/dev/null || true)"
+        flavour="$(printf '%s' "${ver}" | sed -n 's/.*+cuda\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p')"
+        [[ -n "${flavour}" ]] || continue
+        if [[ "${flavour}" != "${want}" ]]; then
+            echo "ERROR: gpu_tuned_verify_bundled_cuda_flavor: ${f} belongs to ${pkg} ${ver}, built for CUDA ${flavour}, but this package is for CUDA ${want}. Do not bundle it: pin a build made for ${want} (docs/ARCHITECTURE.md)." >&2
+            rc=1
+        fi
+    done
+    return "${rc}"
 }
 
 # gpu_tuned_check_wheel_label <wheel-path> -- refuses (returns 1) unless the wheel's file name

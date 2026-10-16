@@ -88,6 +88,30 @@ export LLAMA_TUNED_BUILD_DIR LLAMA_TUNED_TEST_LOG
 export CCACHE_DIR="${LLAMA_TUNED_BUILD_ROOT}/${CUDA_TAG}/ccache"
 export CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-20G}"
 
+# --- NCCL: GGML_CUDA_NCCL=ON links NCCL, and the toolkit decides where it comes from. A toolkit with a line in
+#     tuned/nccl.pins gets that zbrad/nccl release (built for exactly that toolkit), fetched, checksum-verified and
+#     linked statically into libggml-cuda, so no libnccl.so is shipped or needed. Otherwise the toolkit file must pin
+#     a system libnccl2 (TOOLKIT_NCCL_VERSION, checked by gpu_tuned_verify_toolkit) which package.sh bundles. A
+#     toolkit that declares "none" and has no pin cannot be built: the host's libnccl2 was built for another CUDA. ---
+LLAMA_TUNED_NCCL_DIR=""; LLAMA_TUNED_NCCL_TAG=""; LLAMA_TUNED_NCCL_VERSION=""
+_nccl_tag="$(awk -v v="${GPU_TUNED_VARIANT}" -v c="${CUDA_TAG}" '$1 !~ /^#/ && $1==v && $2==c {print $3}' "${GPU_TUNED_SELF_DIR}/nccl.pins" 2>/dev/null)"
+if [ -n "${_nccl_tag}" ]; then
+    gpu_tuned_fetch_nccl_release "${_nccl_tag}" "${LLAMA_TUNED_BUILD_ROOT}/${CUDA_TAG}/nccl/${_nccl_tag}" || { unset _nccl_tag; return 1 2>/dev/null || exit 1; }
+    LLAMA_TUNED_NCCL_DIR="${LLAMA_TUNED_BUILD_ROOT}/${CUDA_TAG}/nccl/${_nccl_tag}"
+    LLAMA_TUNED_NCCL_TAG="${_nccl_tag}"
+    LLAMA_TUNED_NCCL_VERSION="$(sed -n 's/^nccl_version=//p' "${LLAMA_TUNED_NCCL_DIR}/BUILD_INFO" | head -1)"
+    [ -n "${LLAMA_TUNED_NCCL_VERSION}" ] || { echo "[tuned/env] ERROR: ${LLAMA_TUNED_NCCL_DIR}/BUILD_INFO has no nccl_version." >&2; unset _nccl_tag; return 1 2>/dev/null || exit 1; }
+    echo "[tuned/env] NCCL ${LLAMA_TUNED_NCCL_VERSION} from zbrad/nccl ${_nccl_tag} (static, no libnccl.so shipped)" >&2
+elif [ "${TOOLKIT_NCCL_VERSION:-none}" = none ]; then
+    echo "[tuned/env] ERROR: ${CUDA_TAG} declares no system NCCL (TOOLKIT_NCCL_VERSION=none) and tuned/nccl.pins has no line for ${GPU_TUNED_VARIANT} ${CUDA_TAG}." >&2
+    echo "  Pin a zbrad/nccl release built for it in tuned/nccl.pins, or choose a toolkit with a system NCCL pin." >&2
+    unset _nccl_tag; return 1 2>/dev/null || exit 1
+else
+    LLAMA_TUNED_NCCL_VERSION="${TOOLKIT_NCCL_VERSION}"
+fi
+unset _nccl_tag
+export LLAMA_TUNED_NCCL_DIR LLAMA_TUNED_NCCL_TAG LLAMA_TUNED_NCCL_VERSION
+
 # gpu_tuned_verify_arch/gpu_tuned_verify_cuda_compat now come from
 # common.sh (sourced above); call sites in package.sh pass
 # GPU_TUNED_CUDA_ARCH explicitly (the shared version takes it as an arg
@@ -108,11 +132,18 @@ embed_build_info() {
     local target="$1" component="$2" release="$3" ui_name="$4" ui_sha="$5" declared nvcc_full
     declared="$(LD_LIBRARY_PATH="${LLAMA_TUNED_BUILD_DIR}/bin" "${LLAMA_TUNED_BUILD_DIR}/bin/llama-server" --version 2>&1 | sed -n 's/^version: \([^ ]*\) (build.*/\1/p' | head -1)"
     [[ -n "${declared}" ]] || { echo "ERROR: embed_build_info: could not read the version from ${LLAMA_TUNED_BUILD_DIR}/bin/llama-server --version." >&2; return 1; }
+    local nccl_fields=()
+    if [ -n "${LLAMA_TUNED_NCCL_DIR}" ]; then
+        nccl_fields=("deps.nccl.source=zbrad/nccl" "deps.nccl.tag=${LLAMA_TUNED_NCCL_TAG}" "deps.nccl.version=${LLAMA_TUNED_NCCL_VERSION}" "deps.nccl.linkage=static")
+    else
+        nccl_fields=("deps.nccl.source=system libnccl2" "deps.nccl.version=${LLAMA_TUNED_NCCL_VERSION}" "deps.nccl.linkage=shared")
+    fi
     nvcc_full="$("${CUDA_HOME}/bin/nvcc" --version | sed -n 's/.*release [0-9.]*, V\([0-9.]*\).*/\1/p' | head -1)"
     gpu_tuned_embed_build_info_json "${target}" \
         package=llama.cpp "component=${component}" "release=${release}" "variant=${GPU_TUNED_VARIANT}" \
         "hardware=${GPU_TUNED_HW_LABEL}" "arch=sm_${GPU_TUNED_CUDA_ARCH}" \
         "cuda.tag=${CUDA_TAG}" "cuda.version=${CUDA_VER}" "cuda.nvcc=${nvcc_full:-unknown}" \
         "upstream.declared_version=${declared}" \
-        "deps.ui.name=${ui_name}" "deps.ui.tarball_sha256=${ui_sha}"
+        "deps.ui.name=${ui_name}" "deps.ui.tarball_sha256=${ui_sha}" \
+        "${nccl_fields[@]}"
 }

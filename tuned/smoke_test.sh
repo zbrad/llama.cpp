@@ -77,6 +77,21 @@ run() {
         fail "the installed build info does not name ${RELEASE_TAG} / commit count ${BUILD_NUMBER}, or BUILD_INFO.json differs from the stamp"
     fi
 
+    # NCCL: the stamp names where it came from, and the install matches: static means no libnccl.so anywhere.
+    if [[ -n "${LLAMA_TUNED_NCCL_DIR}" ]]; then
+        if gpu_tuned_verify_build_info_json "${INSTALL_DIR}/llama-server-tuned" "deps.nccl.tag=${LLAMA_TUNED_NCCL_TAG}" "deps.nccl.version=${LLAMA_TUNED_NCCL_VERSION}" deps.nccl.linkage=static 2>&1 \
+            && [[ -z "$(find "${INSTALL_DIR}" -maxdepth 1 -name 'libnccl*' -print -quit)" ]] \
+            && ! readelf -d "${INSTALL_DIR}"/libggml-cuda-tuned.so.0.* 2>/dev/null | grep -q 'Shared library: \[libnccl'; then
+            ok "NCCL ${LLAMA_TUNED_NCCL_VERSION} from zbrad/nccl ${LLAMA_TUNED_NCCL_TAG}: stamped, linked statically, no libnccl.so installed or needed"
+        else
+            fail "NCCL: expected the stamp to name zbrad/nccl ${LLAMA_TUNED_NCCL_TAG} (static) and no libnccl.so in the install"
+        fi
+    elif gpu_tuned_verify_build_info_json "${INSTALL_DIR}/llama-server-tuned" "deps.nccl.version=${LLAMA_TUNED_NCCL_VERSION}" deps.nccl.linkage=shared 2>&1; then
+        ok "NCCL ${LLAMA_TUNED_NCCL_VERSION} (system libnccl2, bundled) is stamped"
+    else
+        fail "NCCL: the stamp does not name system libnccl2 ${LLAMA_TUNED_NCCL_VERSION}"
+    fi
+
     # The installed files are flat (INSTALL_DIR itself is the lib dir), so it goes on the path first.
     export GPU_TUNED_SMOKE_LD_EXTRA="${INSTALL_DIR}:${GPU_TUNED_TOOLKIT_LIB_DIR}"
     gpu_tuned_verify_resolves_in "${INSTALL_DIR}" "${INSTALL_DIR}/llama-server-tuned" \

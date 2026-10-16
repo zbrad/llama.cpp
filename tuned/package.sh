@@ -194,6 +194,25 @@ for deppath in "${!EXTRA_SYSTEM_LIBS[@]}"; do
     SO_FILES+=("${real}")
 done
 
+# NCCL gates. A system library that is bundled must be built for this toolkit's CUDA (a +cuda13.3 libnccl2 in
+# a cu134 package is exactly what this refuses). When NCCL comes from a pinned zbrad/nccl release it is linked
+# statically, so nothing in the package may need or carry a libnccl.so at all.
+if [[ "${#EXTRA_SYSTEM_LIBS[@]}" -gt 0 ]]; then
+    gpu_tuned_verify_bundled_cuda_flavor "${CUDA_VER}" "${!EXTRA_SYSTEM_LIBS[@]}" || exit 1
+fi
+if [[ -n "${LLAMA_TUNED_NCCL_DIR}" ]]; then
+    leaked="$(find "${STAGE}" -maxdepth 1 -name 'libnccl*' -print | head -3)"
+    [[ -z "${leaked}" ]] || { echo "ERROR: NCCL is linked statically (${LLAMA_TUNED_NCCL_TAG}) but the package carries: ${leaked}" >&2; exit 1; }
+    for f in "${STAGE}"/*; do
+        [[ -f "${f}" && ! -L "${f}" ]] || continue
+        if readelf -d "${f}" 2>/dev/null | grep -q 'Shared library: \[libnccl'; then
+            echo "ERROR: $(basename "${f}") still needs a libnccl.so although NCCL ${LLAMA_TUNED_NCCL_VERSION} was to be linked statically; the build did not use ${LLAMA_TUNED_NCCL_DIR}." >&2
+            exit 1
+        fi
+    done
+    echo "NCCL ${LLAMA_TUNED_NCCL_VERSION} (zbrad/nccl ${LLAMA_TUNED_NCCL_TAG}) is linked statically; no libnccl.so in the package."
+fi
+
 # Patch RUNPATH on every staged binary/lib to $ORIGIN, replacing the
 # absolute build-machine path CMake bakes in by default (confirmed via
 # `readelf -d`: RUNPATH was literally "/home/zbrad/gh/llama.cpp/build/bin"
@@ -332,6 +351,8 @@ else
     {
         echo "<!-- DRAFT — not yet published: review, then delete this line and commit -->"
         redact_hostnames "llama-server-tuned + llama-quantize-tuned + $(( ${#SO_FILES[@]} )) shared libraries, single-arch (sm_${GPU_TUNED_CUDA_ARCH}), built against CUDA ${CUDA_VER}. Includes the Ollama-format GGUF compatibility shim. Web UI: ${UI_BUILD% *} (audited dependency set, tarball sha256 ${UI_BUILD#* }). Easiest setup: curl -fsSL https://raw.githubusercontent.com/zbrad/llama.cpp/tuned-builds/install.sh | bash -- fetches this release, models/aliases.json, and llmsrv.sh for you (that URL always has the current installer; it takes the helper files from this release's own tag). To deploy into an Ollama installation instead, see zbrad/ollama's tuned-builds fetch script, or manually: extract and copy llama-server + libs to your Ollama lib directory, symlinking llama-server into place (see zbrad/ollama's docs/local-llama-cpp.md)."
+        echo ""
+        echo "NCCL ${LLAMA_TUNED_NCCL_VERSION}: $([[ -n "${LLAMA_TUNED_NCCL_DIR}" ]] && echo "from zbrad/nccl ${LLAMA_TUNED_NCCL_TAG}, built for ${CUDA_TAG}, linked statically into libggml-cuda; no libnccl.so is shipped or needed" || echo "the system libnccl2 this toolkit pins, bundled in the package")."
         echo ""
         if [[ -f "${BUILD_DIR}/relabel.json" ]] && grep -q "\"to\":\"${RELEASE_TAG}\"" "${BUILD_DIR}/relabel.json"; then
             echo "Tested: the ctest suite passed (log attached) on the same commit built as $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["from"])' "${BUILD_DIR}/relabel.json"); this release was relabelled from it without rerunning the suite, after tuned/relabel.sh showed the rebuilt binaries differ from the tested ones only in the release label (section-by-section comparison of every ELF file). The tarball was checked as extracted (version, ldd, RUNPATH, toolkit libraries) and installed with install.sh."
