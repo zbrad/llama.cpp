@@ -17,9 +17,9 @@
 #
 # The toolkit comes from the vendored definitions in tuned/common-data/
 # toolkits/<id>.env (zbrad/tuned-common), never from /usr/local/cuda or from
-# whatever happens to be installed. With neither CUDA_TAG nor CUDA_VER set, the
-# highest defined toolkit is used and the available list and the reason are
-# printed. Repo-specific settings live in tuned/repo.env, loaded last; it may
+# whatever happens to be installed. There is no default: CUDA_TAG or CUDA_VER
+# must name one. With neither set the loader fails and lists the defined toolkits
+# (at a terminal it asks which to use, for that run only). Repo-specific settings live in tuned/repo.env, loaded last; it may
 # not change any shared key (a conflict is a loud error).
 
 GPU_TUNED_ARG_VARIANT="$1"
@@ -58,7 +58,7 @@ export LLAMA_TUNED_BUILD_NUMBER LLAMA_TUNED_BUILD_COMMIT
 
 # --- CUDA toolkit: chosen from tuned/common-data/toolkits, never inferred from
 #     /usr/local/cuda or from what is installed. CUDA_TAG (cu133) or CUDA_VER
-#     (13.3) select one; neither set means the highest defined, stated loudly. ---
+#     (13.3) select one; neither set is an error listing the defined ones (no default). ---
 _llama_tk="${CUDA_TAG:-}"
 _llama_req_ver="${CUDA_VER:-}"
 if [ -z "${_llama_tk}" ] && [ -n "${_llama_req_ver}" ]; then

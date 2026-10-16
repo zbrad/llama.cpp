@@ -96,8 +96,9 @@ It holds `release` (the identity, first), `component`, `variant`, `hardware`, `a
    CUDA_TAG=cu133 bash tuned/release.sh gb10      # or CUDA_VER=13.3
    ```
 
-   With neither `CUDA_TAG` nor `CUDA_VER` the toolkit named in `tuned/common-data/toolkits/DEFAULT` is used, and
-   the available list is printed. For a preflight-only check add `--preflight-only`.
+   One of `CUDA_TAG` or `CUDA_VER` is required: there is no default toolkit. With neither, the scripts fail and list
+   the defined toolkits (run from a terminal they ask which to use, for that run only). For a preflight-only check
+   add `--preflight-only`.
 5. **Publish** by re-running with `--publish`. It creates the GitHub release targeting `tuned-builds` with the
    tarball, its `.sha256`, the notes file, the test log and the smoke log. This is the only step that changes
    anything remote.
