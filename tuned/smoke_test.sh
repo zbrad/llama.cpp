@@ -44,7 +44,7 @@ run() {
     echo "tarball: $(basename "${TARBALL}")"
     echo ""
 
-    local got out rc ver lib
+    local got out rc ver lib rel
     got="$(sha256sum "${TARBALL}" | awk '{print $1}')"
     [[ "${got}" == "${WANT_SHA}" ]] && ok "sha256 matches package-info.txt (${got:0:12}...)" || fail "sha256 ${got} != package-info.txt ${WANT_SHA}"
 
@@ -59,6 +59,8 @@ run() {
     fi
 
     ver="$(LD_LIBRARY_PATH="${INSTALL_DIR}" "${INSTALL_DIR}/llama-server-tuned" --version 2>&1 | grep -m1 '^version:' || true)"
+    rel="$(LD_LIBRARY_PATH="${INSTALL_DIR}" "${INSTALL_DIR}/llama-server-tuned" --version 2>&1 | grep -m1 '^release:' || true)"
+    [[ "${rel}" == "release: ${RELEASE_TAG}" ]] && ok "installed llama-server-tuned prints ${rel}" || fail "installed llama-server-tuned prints '${rel}', expected 'release: ${RELEASE_TAG}'"
     if [[ "${ver}" == *"(build ${BUILD_NUMBER}, commit ${BUILD_COMMIT})"* ]]; then
         ok "installed llama-server-tuned reports ${ver#version: }"
     else

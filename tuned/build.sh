@@ -40,16 +40,27 @@ if [[ -f "${cache}" ]]; then
     fi
 fi
 
+# The release label is allocated here, at the first stage that bakes it into the binary (it is compiled into
+# build-info.cpp, so `llama-server --version` prints it), and recorded beside the build. package.sh and
+# release.sh read it and never recompute it. It is the UTC date of HEAD's commit plus the lowest sequence not
+# yet taken by a published tag; nothing reserves it until publish, so two builds on one date can carry the same
+# label (the stamp's full commit tells them apart). GPU_TUNED_LABEL_SEQ=<n> chooses the sequence offline.
+LABEL="$(gpu_tuned_allocate_date_label "${REPODIR}")" || exit 1
+RELEASE_TAG="$(gpu_tuned_native_tag "${GPU_TUNED_VARIANT}" "${CUDA_TAG}" "${LABEL}")" || exit 1
+mkdir -p "${BUILD_DIR}"
+printf '%s\n' "${RELEASE_TAG}" > "${BUILD_DIR}/release-label"
+
 LAUNCHER=()
 if command -v ccache >/dev/null; then
     mkdir -p "${CCACHE_DIR}"
     LAUNCHER=(-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_CUDA_COMPILER_LAUNCHER=ccache)
 fi
 
-echo "Building llama.cpp ${LLAMA_TUNED_BUILD_NUMBER} (${LLAMA_TUNED_BUILD_COMMIT}): ${CUDA_TAG} (CUDA ${CUDA_VER}), sm_${GPU_TUNED_CUDA_ARCH}"
+echo "Building llama.cpp ${RELEASE_TAG} (commit ${LLAMA_TUNED_BUILD_COMMIT}): ${CUDA_TAG} (CUDA ${CUDA_VER}), sm_${GPU_TUNED_CUDA_ARCH}"
 echo "  Build dir : ${BUILD_DIR}"
 # CMake takes the bare arch (121) and upgrades it to 121a itself.
 cmake -S "${REPODIR}" -B "${BUILD_DIR}" "${LLAMA_TUNED_CMAKE_FLAGS[@]}" "${LAUNCHER[@]}" \
+    "-DLLAMA_TUNED_RELEASE=${RELEASE_TAG}" \
     -DCMAKE_CUDA_COMPILER="${CUDA_HOME}/bin/nvcc" \
     -DCMAKE_CUDA_ARCHITECTURES="${GPU_TUNED_CUDA_ARCH//[a-z]/}"
 cmake --build "${BUILD_DIR}" --config Release -j"$(gpu_tuned_jobs)"

@@ -7,6 +7,10 @@ int LLAMA_BUILD_NUMBER = @LLAMA_BUILD_NUMBER@;
 char const * LLAMA_COMMIT = "@LLAMA_BUILD_COMMIT@";
 char const * LLAMA_COMPILER = "@BUILD_COMPILER@";
 char const * LLAMA_BUILD_TARGET = "@BUILD_TARGET@";
+// tuned-builds (zbrad): the release this binary is part of, set with -DLLAMA_TUNED_RELEASE=<tag> (empty, and the
+// output below byte-for-byte upstream's, when unset). A fixed-width buffer on purpose: relabelling a binary then
+// changes only these bytes, which tuned/relabel.sh can prove. Longer than 63 characters fails to compile.
+char LLAMA_TUNED_RELEASE[64] = "@LLAMA_TUNED_RELEASE@";
 
 int llama_build_number(void) {
     return LLAMA_BUILD_NUMBER;
@@ -30,6 +34,9 @@ const char * llama_build_info(void) {
 }
 
 void llama_print_build_info(const char * llama_version, FILE * stream) {
+    if (LLAMA_TUNED_RELEASE[0] != '\0') {
+        fprintf(stream, "release: %s\n", LLAMA_TUNED_RELEASE);
+    }
     fprintf(stream, "version: %s (build %d, commit %s)\n", llama_version, llama_build_number(), llama_commit());
     fprintf(stream, "built with %s for %s\n", llama_compiler(), llama_build_target());
 }

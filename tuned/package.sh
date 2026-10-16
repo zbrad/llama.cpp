@@ -85,13 +85,13 @@ gpu_tuned_verify_cuda_compat "${CUDA_SO}" "${CUDA_VER}"
 # tools/ui sources as this checkout; never upstream's lockfile built or downloaded by CMake.
 UI_BUILD="$(bash "${REPODIR}/tuned/check-ui.sh" "${BUILD_DIR}")" || exit 1
 
-# Release identity: the UTC date of HEAD's commit plus the lowest unused sequence for that date among
-# the repo's release tags (gpu_tuned_allocate_date_label; origin is read, GPU_TUNED_LABEL_SEQ=<n>
-# chooses offline), as the native tag v0.<date>.<seq>-<variant>-<cuda>. Allocated once, here, and
-# recorded in package-info.txt: release.sh must not recompute it, because a notes commit moves HEAD
-# (and its date). The build number below is only what llama-server --version reports.
-LABEL="$(gpu_tuned_allocate_date_label "${REPODIR}")" || exit 1
-RELEASE_TAG="$(gpu_tuned_native_tag "${GPU_TUNED_VARIANT}" "${CUDA_TAG}" "${LABEL}")" || exit 1
+# Release identity: the native tag v0.<date>.<seq>-<variant>-<cuda> that tuned/build.sh allocated and compiled into
+# the binary (`llama-server --version` prints it), read from the build tree and checked: it must be a valid
+# date-label tag for this variant and toolkit, and the packaged binary must print it. Not recomputed here.
+[[ -f "${BUILD_DIR}/release-label" ]] || { echo "ERROR: ${BUILD_DIR}/release-label not found; run tuned/build.sh ${GPU_TUNED_VARIANT} for ${CUDA_TAG}." >&2; exit 1; }
+RELEASE_TAG="$(head -1 "${BUILD_DIR}/release-label")"
+gpu_tuned_check_release_tag "${RELEASE_TAG}" || exit 1
+[[ "${RELEASE_TAG}" == v0.*-"${GPU_TUNED_VARIANT}-${CUDA_TAG}" ]] || { echo "ERROR: the build's release ${RELEASE_TAG} is not for ${GPU_TUNED_VARIANT}-${CUDA_TAG}." >&2; exit 1; }
 echo "  Release   : ${RELEASE_TAG}"
 DIST_DIR="${REPODIR}/dist/${GPU_TUNED_VARIANT}"
 rm -rf "${DIST_DIR}"
@@ -264,6 +264,12 @@ tar -C "${CHECK_DIR}" -xzf "${TARBALL}"
 # Run with the toolkit's own lib dir first: the host's ld.so.conf follows the /usr/local/cuda
 # symlink, which can satisfy cudart/cublas from another version.
 version_line="$(env LD_LIBRARY_PATH="${GPU_TUNED_TOOLKIT_LIB_DIR}" "${CHECK_DIR}/llama-server-tuned" --version 2>&1 | grep -m1 '^version:' || true)"
+release_line="$(env LD_LIBRARY_PATH="${GPU_TUNED_TOOLKIT_LIB_DIR}" "${CHECK_DIR}/llama-server-tuned" --version 2>&1 | grep -m1 '^release:' || true)"
+if [[ "${release_line}" == "release: ${RELEASE_TAG}" ]]; then
+    pkg_ok "extracted llama-server-tuned prints ${release_line}"
+else
+    pkg_fail "extracted llama-server-tuned prints '${release_line}', expected 'release: ${RELEASE_TAG}'"
+fi
 if [[ "${version_line}" == *"(build ${LLAMA_TUNED_BUILD_NUMBER}, commit ${LLAMA_TUNED_BUILD_COMMIT})"* ]]; then
     pkg_ok "extracted llama-server-tuned reports ${version_line#version: }"
 else
