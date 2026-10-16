@@ -124,11 +124,12 @@ for so in "${SO_FILES[@]}"; do
     fi
 done
 
-# Stamp build-info onto the two primary consumer-facing artifacts: the server binary itself, and
-# the GPU-specific .so (every staged copy of it, SONAME copy included).
-embed_build_info "${STAGE}/llama-server-tuned"
+# Stamp the JSON build info onto the two primary consumer-facing artifacts: the server binary itself, and
+# the GPU-specific .so (every staged copy of it, SONAME copy included). Staged copies only: stamping the build
+# tree would make it newer than its test log.
+embed_build_info "${STAGE}/llama-server-tuned" llama-server-tuned "${RELEASE_TAG}" "${UI_BUILD% *}" "${UI_BUILD#* }" || exit 1
 for f in "${STAGE}"/libggml-cuda.so*; do
-    [[ -f "${f}" && ! -L "${f}" ]] && embed_build_info "${f}"
+    [[ -f "${f}" && ! -L "${f}" ]] && { embed_build_info "${f}" ggml-cuda-tuned "${RELEASE_TAG}" "${UI_BUILD% *}" "${UI_BUILD#* }" || exit 1; }
 done
 
 # Detect and stage system-library dependencies that CMake itself never
@@ -224,11 +225,17 @@ echo "Giving this build's shared objects unique identities:"
 # gpu_tuned_rename_package renames, then fails closed: every shared object is tuned, or a recorded
 # bundled system library; every DT_NEEDED resolves inside the stage or is assumed present on the target
 gpu_tuned_rename_package "${STAGE}" "${OURS_MANIFEST}" "${SYSTEM_MANIFEST}" "" "${ASSUME_PRESENT_RE}"
-# patchelf rewrote the stamped files; prove the build-info stamp survived on both
-gpu_tuned_verify_build_info "${STAGE}/llama-server-tuned" llama_tuned "${LLAMA_TUNED_BUILD_NUMBER}" .llama_tuned_build_info >/dev/null
-STAGED_CUDA_SO="$(find "${STAGE}" -maxdepth 1 -name 'libggml-cuda*.so.*.*' -not -type l | head -1)"
-[[ -n "${STAGED_CUDA_SO}" ]] || { echo "ERROR: no staged libggml-cuda*.so.*.* after the rename." >&2; exit 1; }
-gpu_tuned_verify_build_info "${STAGED_CUDA_SO}" llama_tuned "${LLAMA_TUNED_BUILD_NUMBER}" .llama_tuned_build_info >/dev/null
+# patchelf rewrote the stamped files; prove the stamp survived on the server and on every staged ggml-cuda copy
+gpu_tuned_verify_build_info_json "${STAGE}/llama-server-tuned" "release=${RELEASE_TAG}" component=llama-server-tuned "variant=${GPU_TUNED_VARIANT}" "cuda.tag=${CUDA_TAG}" >/dev/null || exit 1
+STAGED_CUDA_N=0
+for f in "${STAGE}"/libggml-cuda*.so.*; do
+    [[ -f "${f}" && ! -L "${f}" ]] || continue
+    gpu_tuned_verify_build_info_json "${f}" "release=${RELEASE_TAG}" component=ggml-cuda-tuned >/dev/null || exit 1
+    STAGED_CUDA_N=$((STAGED_CUDA_N + 1))
+done
+[[ ${STAGED_CUDA_N} -ge 1 ]] || { echo "ERROR: no staged libggml-cuda*.so.* after the rename." >&2; exit 1; }
+# The same JSON, shipped beside the binaries so install.sh, llmsrv.sh and automation can read the release without readelf.
+gpu_tuned_read_build_info "${STAGE}/llama-server-tuned" > "${STAGE}/BUILD_INFO.json" || exit 1
 
 echo ""
 echo "Packaging $(basename "${STAGE}")'s $(ls "${STAGE}" | wc -l) files -> ${TARBALL}..."

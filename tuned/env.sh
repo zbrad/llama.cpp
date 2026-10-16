@@ -94,16 +94,25 @@ export CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-20G}"
 # instead of reading a global, since different repos in the fleet name
 # their arch var differently).
 
-# embed_build_info <binary-or-so-path> — thin wrapper over
-# gpu_tuned_embed_build_info (common.sh) that keeps this repo's existing
-# section name (.llama_tuned_build_info -- unchanged, so `readelf -p
-# .llama_tuned_build_info <file>` still works exactly as documented) and
-# folds llama.cpp's own build-identity fields (no VERSION file, unlike the
-# RAPIDS repos -- BUILD_NUMBER/BUILD_COMMIT/CUDA_TAG derived above) into
-# the "version" field instead of a plain semver.
+# Upstream this fork tracks, for the build-info stamp's upstream.base / nearest_tag. Declared, never guessed.
+: "${GPU_TUNED_UPSTREAM_REF:=upstream/master}"
+export GPU_TUNED_UPSTREAM_REF
+
+# embed_build_info <staged-elf> <component> <release-tag> <ui-name> <ui-sha256> — stamps the JSON build info
+# (tuned-common, docs/ARCHITECTURE.md "Build info") into <staged-elf>'s .tuned_build_info section; read it with
+#   gpu_tuned_read_build_info <elf> | jq .
+# The release tag is the identity. upstream.declared_version is what the built llama-server reports as its
+# version ("0.5.0-dev"), fork.commit_count the repo-relative count llama.cpp's own --version calls "build".
+# Git fields (fork, upstream) are added automatically from the checkout the packager runs in.
 embed_build_info() {
-    local target="$1"
-    gpu_tuned_embed_build_info "${target}" "${GPU_TUNED_VARIANT}" "llama_tuned" \
-        "${LLAMA_TUNED_BUILD_NUMBER} (${LLAMA_TUNED_BUILD_COMMIT}), ${CUDA_TAG}" \
-        "${GPU_TUNED_HW_LABEL}" "https://github.com/zbrad/llama.cpp"
+    local target="$1" component="$2" release="$3" ui_name="$4" ui_sha="$5" declared nvcc_full
+    declared="$(LD_LIBRARY_PATH="${LLAMA_TUNED_BUILD_DIR}/bin" "${LLAMA_TUNED_BUILD_DIR}/bin/llama-server" --version 2>&1 | sed -n 's/^version: \([^ ]*\) (build.*/\1/p' | head -1)"
+    [[ -n "${declared}" ]] || { echo "ERROR: embed_build_info: could not read the version from ${LLAMA_TUNED_BUILD_DIR}/bin/llama-server --version." >&2; return 1; }
+    nvcc_full="$("${CUDA_HOME}/bin/nvcc" --version | sed -n 's/.*release [0-9.]*, V\([0-9.]*\).*/\1/p' | head -1)"
+    gpu_tuned_embed_build_info_json "${target}" \
+        package=llama.cpp "component=${component}" "release=${release}" "variant=${GPU_TUNED_VARIANT}" \
+        "hardware=${GPU_TUNED_HW_LABEL}" "arch=sm_${GPU_TUNED_CUDA_ARCH}" \
+        "cuda.tag=${CUDA_TAG}" "cuda.version=${CUDA_VER}" "cuda.nvcc=${nvcc_full:-unknown}" \
+        "upstream.declared_version=${declared}" \
+        "deps.ui.name=${ui_name}" "deps.ui.tarball_sha256=${ui_sha}"
 }

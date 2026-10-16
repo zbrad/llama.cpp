@@ -368,6 +368,9 @@ chmod +x "$INSTALL_DIR/llmsrv.sh"
 
 echo ""
 status "Installed to ${INSTALL_DIR}"
+if [ -f "$INSTALL_DIR/BUILD_INFO.json" ]; then
+    status "Release: $(grep -o '"release":"[^"]*"' "$INSTALL_DIR/BUILD_INFO.json" | head -1 | cut -d'"' -f4) (build info: $INSTALL_DIR/BUILD_INFO.json)"
+fi
 if [ -n "$search_paths_note" ]; then
     status "Model search paths, ${SEARCH_PATHS_LOCAL}: ${search_paths_note}"
     grep -v '^#' "$SEARCH_PATHS_LOCAL" | sed 's/^/    /' >&2 || true

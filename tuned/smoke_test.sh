@@ -8,7 +8,7 @@
 #   2. install.sh itself succeeds: it verifies the sidecar checksum, extracts, checks that every library
 #      resolves and llama-server sees a CUDA device, and serves a completion from a ~1 MB model;
 #   3. the installed llama-server-tuned reports the build number and commit this checkout derives for the
-#      package, and every library it needs resolves to a file inside the install directory (not the build
+#      package, its JSON build info names this release (and BUILD_INFO.json is that same stamp), and every library it needs resolves to a file inside the install directory (not the build
 #      tree, not a stock llama.cpp);
 #   4. the installed llmsrv.sh and models/aliases.json are the ones in this checkout.
 # A smoke test, not the suite: tuned/full_test.sh already ran every ctest against the build tree. What is
@@ -63,6 +63,16 @@ run() {
         ok "installed llama-server-tuned reports ${ver#version: }"
     else
         fail "installed llama-server-tuned reports '${ver}', expected (build ${BUILD_NUMBER}, commit ${BUILD_COMMIT})"
+    fi
+
+    # The build info: the stamp in the installed binary names this release and this commit, and the shipped
+    # BUILD_INFO.json is that same stamp.
+    if gpu_tuned_verify_build_info_json "${INSTALL_DIR}/llama-server-tuned" "release=${RELEASE_TAG}" "variant=${GPU_TUNED_VARIANT}" \
+        "cuda.tag=${CUDA_TAG}" "fork.commit_count:int=${BUILD_NUMBER}" 2>&1 \
+        && [[ "$(gpu_tuned_read_build_info "${INSTALL_DIR}/llama-server-tuned")" == "$(tr -d '\n' < "${INSTALL_DIR}/BUILD_INFO.json")" ]]; then
+        ok "the installed stamp names ${RELEASE_TAG}, and BUILD_INFO.json is that same stamp"
+    else
+        fail "the installed build info does not name ${RELEASE_TAG} / commit count ${BUILD_NUMBER}, or BUILD_INFO.json differs from the stamp"
     fi
 
     # The installed files are flat (INSTALL_DIR itself is the lib dir), so it goes on the path first.
