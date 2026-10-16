@@ -853,6 +853,183 @@ gpu_tuned_require_clean_tree() {
     echo "OK: clean tracked tree at ${top} ($(git rev-parse --short HEAD 2>/dev/null || echo '?'))"
 }
 
+# --- JSON build-info stamp (docs/ARCHITECTURE.md, "Build info") -------------------------------------
+# One line of strict JSON in the fixed ELF section .tuned_build_info, readable with
+#   gpu_tuned_read_build_info <file> | jq .      (or: readelf -p .tuned_build_info <file>)
+# It replaces the free-text stamp of gpu_tuned_embed_build_info, which stays for repos that have not
+# moved. Fields are given as name=value arguments: a dotted name nests (fork.url=... puts "url" in the
+# "fork" object), a :int, :bool or :null suffix on the name sets the JSON type (everything else is a
+# string). The writer is python3's json module, so quoting and escaping are never hand-built.
+
+# gpu_tuned_build_info_json [name[:type]=value]... -- prints the JSON object, "schema" first. Fails loudly
+# on a bad name, a bad int or bool, a duplicate, or a name that is both a value and a parent.
+gpu_tuned_build_info_json() {
+    command -v python3 >/dev/null || { echo "ERROR: gpu_tuned_build_info_json: python3 is required." >&2; return 1; }
+    python3 - "$@" <<'PY'
+import json, re, sys
+KEY = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$")
+obj = {"schema": "tuned-build-info/1"}
+seen = set()
+for arg in sys.argv[1:]:
+    name, sep, value = arg.partition("=")
+    if not sep:
+        sys.exit("ERROR: gpu_tuned_build_info_json: '%s' is not name=value." % arg)
+    typ = "str"
+    if ":" in name:
+        name, typ = name.rsplit(":", 1)
+    if typ not in ("str", "int", "bool", "null") or not KEY.match(name):
+        sys.exit("ERROR: gpu_tuned_build_info_json: bad field name or type in '%s'." % arg)
+    if typ == "int":
+        if not re.fullmatch(r"0|[1-9][0-9]*", value):
+            sys.exit("ERROR: gpu_tuned_build_info_json: %s is not a canonical integer: '%s'." % (name, value))
+        value = int(value)
+    elif typ == "bool":
+        if value not in ("true", "false"):
+            sys.exit("ERROR: gpu_tuned_build_info_json: %s must be true or false, got '%s'." % (name, value))
+        value = (value == "true")
+    elif typ == "null":
+        value = None
+    if re.search(r"[\x00-\x1f]", str(value) if value is not None else ""):
+        sys.exit("ERROR: gpu_tuned_build_info_json: %s contains a control character." % name)
+    parts = name.split(".")
+    node = obj
+    for i, part in enumerate(parts[:-1]):
+        child = node.setdefault(part, {})
+        if not isinstance(child, dict):
+            sys.exit("ERROR: gpu_tuned_build_info_json: %s is both a value and a parent." % ".".join(parts[: i + 1]))
+        node = child
+    if parts[-1] in node:
+        sys.exit("ERROR: gpu_tuned_build_info_json: duplicate or conflicting field %s." % name)
+    node[parts[-1]] = value
+print(json.dumps(obj, ensure_ascii=True, separators=(",", ":")))
+PY
+}
+
+# gpu_tuned__git_info_fields -- name=value lines describing the checkout: fork.url, fork.commit (40 hex),
+# fork.dirty, fork.commit_count (a repo-relative count, information only: never an identity), and, when an
+# `upstream` remote exists, upstream.url, upstream.ref (GPU_TUNED_UPSTREAM_REF, else upstream/HEAD, else null),
+# upstream.base (merge-base with the ref) and upstream.nearest_tag ("<tag>+<distance>"). Never fetches, never
+# fails: a non-git directory yields no fields.
+gpu_tuned__git_info_fields() {
+    local sha url count up_url up_ref base nearest dist
+    sha="$(git rev-parse HEAD 2>/dev/null)" || return 0
+    url="$(gpu_tuned_public_repo_url "${1:-$(git remote get-url origin 2>/dev/null || true)}")"
+    count="$(git rev-list --count HEAD 2>/dev/null || true)"
+    printf 'fork.url=%s\n' "${url:-unknown}"
+    printf 'fork.commit=%s\n' "${sha}"
+    if [ -n "$(git status --porcelain --untracked-files=no 2>/dev/null || true)" ]; then printf 'fork.dirty:bool=true\n'; else printf 'fork.dirty:bool=false\n'; fi
+    [ -z "${count}" ] || printf 'fork.commit_count:int=%s\n' "${count}"
+    up_url="$(git remote get-url upstream 2>/dev/null)" || return 0
+    printf 'upstream.url=%s\n' "$(gpu_tuned_public_repo_url "${up_url}")"
+    up_ref="${GPU_TUNED_UPSTREAM_REF:-}"
+    [ -n "${up_ref}" ] || up_ref="$(git symbolic-ref -q --short refs/remotes/upstream/HEAD 2>/dev/null || true)"
+    if [ -z "${up_ref}" ]; then printf 'upstream.ref:null=\n'; return 0; fi
+    printf 'upstream.ref=%s\n' "${up_ref}"
+    base="$(git merge-base HEAD "${up_ref}" 2>/dev/null)" || return 0
+    printf 'upstream.base=%s\n' "${base}"
+    nearest="$(git describe --tags --abbrev=0 --exclude 'tuning-*' "${base}" 2>/dev/null || true)"
+    if [ -n "${nearest}" ]; then
+        dist="$(git rev-list --count "refs/tags/${nearest}..${base}" 2>/dev/null || true)"
+        printf 'upstream.nearest_tag=%s+%s\n' "${nearest}" "${dist:-0}"
+    fi
+}
+
+# gpu_tuned_embed_build_info_json <elf> [name[:type]=value]... -- stamps <elf> with the JSON object built from
+# the arguments plus the checkout's git fields and a UTC "built" time (arguments win over the automatic
+# fields). Replaces any earlier .tuned_build_info section, so it is idempotent. A caller-given field
+# `fork.url=` overrides the origin URL. Run it from inside the repo, like the older stamp.
+gpu_tuned_embed_build_info_json() {
+    local target="${1:-}" tmp json line auto=() given=() a name
+    shift || true
+    [ -f "${target}" ] || { echo "ERROR: gpu_tuned_embed_build_info_json: ${target:-<none>} is not a file." >&2; return 1; }
+    for a in "$@"; do given+=("${a}"); done
+    while IFS= read -r line; do
+        [ -n "${line}" ] || continue
+        name="${line%%=*}"; name="${name%%:*}"
+        for a in "${given[@]+"${given[@]}"}"; do [ "${a%%[:=]*}" = "${name}" ] && continue 2; done
+        auto+=("${line}")
+    done < <(gpu_tuned__git_info_fields)
+    json="$(gpu_tuned_build_info_json "${given[@]+"${given[@]}"}" "${auto[@]+"${auto[@]}"}" "built=$(date -u +%Y-%m-%dT%H:%M:%SZ)")" || return 1
+    tmp="$(mktemp)"
+    printf '%s\n' "${json}" > "${tmp}"
+    objcopy --remove-section .tuned_build_info "${target}" 2>/dev/null || true
+    objcopy --add-section .tuned_build_info="${tmp}" "${target}" || { rm -f "${tmp}"; return 1; }
+    rm -f "${tmp}"
+}
+
+# gpu_tuned_read_build_info <elf> -- prints the build info as one line of JSON. Reads .tuned_build_info when
+# present; otherwise a legacy free-text <name>_build_info section is wrapped as {"schema":"text","section":
+# "...","text":"..."} so old artifacts stay readable by the same tooling. Returns 1 with a message if the file
+# carries neither. Reads the ELF section table itself (little-endian ELF64, which every target here is),
+# never rewrites the file, and needs only python3.
+gpu_tuned_read_build_info() {
+    local file="${1:-}"
+    [ -f "${file}" ] || { echo "ERROR: gpu_tuned_read_build_info: ${file:-<none>} is not a file." >&2; return 1; }
+    python3 - "${file}" <<'PY'
+import json, struct, sys
+path = sys.argv[1]
+data = open(path, "rb").read()
+if data[:4] != b"\x7fELF" or data[4] != 2 or data[5] != 1:
+    sys.exit("ERROR: gpu_tuned_read_build_info: %s is not a little-endian ELF64 file." % path)
+shoff, = struct.unpack_from("<Q", data, 0x28)
+shentsize, shnum, shstrndx = struct.unpack_from("<HHH", data, 0x3A)
+secs = []
+for i in range(shnum):
+    name, typ, flags, addr, off, size = struct.unpack_from("<IIQQQQ", data, shoff + i * shentsize)
+    secs.append((name, typ, off, size))
+stroff = secs[shstrndx][2]
+def sname(n):
+    end = data.index(b"\0", stroff + n)
+    return data[stroff + n:end].decode("ascii", "replace")
+found = {sname(n): (off, size) for n, typ, off, size in secs if typ != 0}
+if ".tuned_build_info" in found:
+    off, size = found[".tuned_build_info"]
+    text = data[off:off + size].decode("utf-8").rstrip("\0\n")
+    json.loads(text)
+    print(text)
+    sys.exit(0)
+for name in sorted(found):
+    if name.endswith("_build_info"):
+        off, size = found[name]
+        print(json.dumps({"schema": "text", "section": name, "text": data[off:off + size].decode("utf-8", "replace").rstrip("\0\n")}, separators=(",", ":")))
+        sys.exit(0)
+sys.exit("ERROR: gpu_tuned_read_build_info: %s has no .tuned_build_info (or legacy *_build_info) section." % path)
+PY
+}
+
+# gpu_tuned_verify_build_info_json <elf> [name[:type]=expected]... -- reads the stamp and requires each given
+# field to equal the expected value (dotted names reach into objects; :int and :bool compare as JSON types).
+# Fails loudly naming the field, the expected and the actual value; with no fields it only requires valid JSON.
+gpu_tuned_verify_build_info_json() {
+    local file="${1:-}" json
+    shift || true
+    json="$(gpu_tuned_read_build_info "${file}")" || return 1
+    python3 - "${json}" "$@" <<'PY'
+import json, re, sys
+try:
+    obj = json.loads(sys.argv[1])
+except ValueError as e:
+    sys.exit("ERROR: gpu_tuned_verify_build_info_json: the stamp is not valid JSON (%s)." % e)
+bad = 0
+for arg in sys.argv[2:]:
+    name, _, want = arg.partition("=")
+    typ = "str"
+    if ":" in name:
+        name, typ = name.rsplit(":", 1)
+    if typ == "int":
+        want = int(want)
+    elif typ == "bool":
+        want = (want == "true")
+    node = obj
+    for part in name.split("."):
+        node = node.get(part) if isinstance(node, dict) else None
+    if node != want:
+        print("ERROR: gpu_tuned_verify_build_info_json: field %s is %r, expected %r." % (name, node, want), file=sys.stderr)
+        bad = 1
+sys.exit(bad)
+PY
+}
+
 # gpu_tuned_check_wheel_label <wheel-path> -- refuses (returns 1) unless the wheel's file name
 # carries a date-form local version: <public>+[<scm>.]<variant>.cu<cuda>.<YYYYMMDD>[.<seq>] with a
 # real calendar date and no ".0" sequence (docs/VERSIONING.md). Reads the file NAME only, so it
