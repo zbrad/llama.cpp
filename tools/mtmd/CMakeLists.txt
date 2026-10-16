@@ -46,6 +46,7 @@ add_library(mtmd
             models/kimivl.cpp
             models/kimik25.cpp
             models/nemotron-v2-vl.cpp
+            models/nemotron-omni.cpp
             models/muse-glimmer.cpp
             models/llama4.cpp
             models/llava.cpp
@@ -125,6 +126,13 @@ endif()
 if (ANDROID)
     # miniaudio.h defines ma_android_sdk_version() without a prior prototype
     target_compile_options(mtmd PRIVATE -Wno-missing-prototypes)
+endif()
+
+# MSVC defines _M_X64 for ARM64EC, so miniaudio.h takes its x64 path.
+# ARM64EC does not support AVX types.
+string(TOLOWER "${CMAKE_GENERATOR_PLATFORM}" MTMD_GENERATOR_PLATFORM_LWR)
+if (MSVC AND MTMD_GENERATOR_PLATFORM_LWR STREQUAL "arm64ec")
+    target_compile_definitions(mtmd PRIVATE MA_NO_AVX2)
 endif()
 
 if (TARGET BUILD_INFO)
