@@ -3,7 +3,7 @@ llama-server-tuned + llama-quantize-tuned + 17 shared libraries, single-arch (sm
 ### What is new since `v0.20261016.0-gb10-cu133`
 
 - **CUDA 13.4** (nvcc 13.4.92), single-arch `sm_121a`. This is the first cu134 release of this fork.
-- **Base:** upstream llama.cpp `v0.7.0` (2026-10-15), merged into this fork: 478 upstream commits over the cu133 release's base (`b11191`, 2026-09-25). The version it reports is `0.7.0-dev`. Upstream `master` is a further 25 commits ahead (checked 2026-10-16).
+- **Base:** upstream llama.cpp `v0.7.0` (2026-10-15), merged into this fork: 478 upstream commits over the cu133 release's base (`b11191`, 2026-09-25). The version it reports is `0.7.0-dev`. Upstream `master` is a further 24 commits ahead (checked 2026-10-16).
 - **NCCL:** 2.30.7 from `zbrad/nccl v0.20261012.0-gb10-cu134`, built for CUDA 13.4 and linked statically into `libggml-cuda`. No `libnccl.so` is shipped or needed, and NCCL's symbols are hidden from the dynamic table. The cu133 release instead bundles the host's `libnccl2 2.31.2` (built for 13.3); that is why this package is 190 MB where the cu133 one is 605 MB.
 - **Web UI:** rebuilt from upstream's new `tools/ui` as `llama-ui-tuned-20261016` (165 bundled packages; the audit gate at `high` passed), and checked byte for byte against the files embedded in the server before packaging.
 - Same as the cu133 release: the `-tuned` binary and library names, the `release:` line in `--version`, the JSON build info (`BUILD_INFO.json`), the Ollama-format GGUF compatibility shim, `install.sh` and `llmsrv.sh`. Installing: `curl -fsSL https://raw.githubusercontent.com/zbrad/llama.cpp/tuned-builds/install.sh | bash` picks this release on a CUDA 13.4 host and falls back to cu133 on 13.3.
