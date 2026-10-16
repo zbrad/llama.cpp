@@ -97,6 +97,8 @@ fi
 
 if [[ -z "${BIN_TAG}" ]]; then
     fail "no package-info.txt, so no release tag; run tuned/package.sh ${VARIANT}"
+elif ! gpu_tuned_check_release_tag "${BIN_TAG}" 2>/dev/null; then
+    fail "release tag ${BIN_TAG} carries no date label (v0.<YYYYMMDD>.<seq>-<variant>-<cuda>)"
 elif gh release view "${BIN_TAG}" --repo "${REPO}" >/dev/null 2>&1; then
     fail "binary release ${BIN_TAG} already exists"
 else
