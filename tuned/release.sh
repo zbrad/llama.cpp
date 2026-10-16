@@ -6,7 +6,8 @@
 # Without --publish it is a dry run: every gate really runs, nothing is published.
 #
 # Gates: preflight (clean tree, branch, origin, gh, toolkit, tag free); a passing full_test.sh log newer
-# than the build; a package made from that build after the tests; a passing smoke test (install.sh run on
+# than the build (or a relabel record from tuned/relabel.sh proving the build differs from the tested one only
+# in its release label); a package made from that build after the tests; a passing smoke test (install.sh run on
 # that tarball) newer than it; only release notes changed since the package's commit; the notes are not a
 # DRAFT.
 #
@@ -140,12 +141,22 @@ if [[ ! -f "${LLAMA_TUNED_TEST_LOG}" ]]; then
     fail "${LLAMA_TUNED_TEST_LOG} not found; run tuned/full_test.sh ${VARIANT}"
 else
     newer="$(find "${BUILD_DIR}/bin" -maxdepth 1 -type f \( -name 'llama-*' -o -name 'lib*.so*' \) -newer "${LLAMA_TUNED_TEST_LOG}" -print -quit)"
-    if [[ -n "${newer}" ]]; then
-        fail "${newer} is newer than the test log; re-run tuned/full_test.sh ${VARIANT}"
-    elif ! grep -q "Full test suite summary: ctest passed" "${LLAMA_TUNED_TEST_LOG}"; then
+    RELABEL="${BUILD_DIR}/relabel.json"
+    if ! grep -q "Full test suite summary: ctest passed" "${LLAMA_TUNED_TEST_LOG}"; then
         fail "${LLAMA_TUNED_TEST_LOG} does not show a clean pass"
-    else
+    elif [[ -z "${newer}" ]]; then
         ok "full test suite passed, log newer than the build"
+    elif [[ -f "${RELABEL}" ]] && [[ -z "$(find "${BUILD_DIR}/bin" -maxdepth 1 -type f \( -name 'llama-*' -o -name 'lib*.so*' \) -newer "${RELABEL}" -print -quit)" ]] \
+        && python3 - "${RELABEL}" "${BIN_TAG}" "$(sha256sum "${LLAMA_TUNED_TEST_LOG}" | awk '{print $1}')" "$(sed -n 's/^commit: *\([0-9a-f]*\).*/\1/p' "${LLAMA_TUNED_TEST_LOG}" | head -1)" <<'PY'
+import json, sys
+rec = json.load(open(sys.argv[1]))
+ok = (rec.get("to") == sys.argv[2] and rec.get("test_log_sha256") == sys.argv[3] and rec.get("commit") == sys.argv[4])
+sys.exit(0 if ok else 1)
+PY
+    then
+        ok "relabelled build: tuned/relabel.sh showed the binaries differ from the tested build only in the label ($(python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); print(r["from"], "->", r["to"])' "${RELABEL}")); the full suite log is that of the original label"
+    else
+        fail "${newer} is newer than the test log and there is no valid relabel record for ${BIN_TAG}; re-run tuned/full_test.sh ${VARIANT} (or tuned/relabel.sh if only the label changed)"
     fi
 fi
 

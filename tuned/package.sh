@@ -333,7 +333,11 @@ else
         echo "<!-- DRAFT — not yet published: review, then delete this line and commit -->"
         redact_hostnames "llama-server-tuned + llama-quantize-tuned + $(( ${#SO_FILES[@]} )) shared libraries, single-arch (sm_${GPU_TUNED_CUDA_ARCH}), built against CUDA ${CUDA_VER}. Includes the Ollama-format GGUF compatibility shim. Web UI: ${UI_BUILD% *} (audited dependency set, tarball sha256 ${UI_BUILD#* }). Easiest setup: curl -fsSL https://raw.githubusercontent.com/zbrad/llama.cpp/tuned-builds/install.sh | bash -- fetches this release, models/aliases.json, and llmsrv.sh for you (that URL always has the current installer; install.sh itself defaults to a pinned tuning-vN tag internally, see its own header). To deploy into an Ollama installation instead, see zbrad/ollama's tuned-builds fetch script, or manually: extract and copy llama-server + libs to your Ollama lib directory, symlinking llama-server into place (see zbrad/ollama's docs/local-llama-cpp.md)."
         echo ""
-        echo "Tested: the ctest suite passed on this build (log attached), and the tarball was checked as extracted (version, ldd, RUNPATH, toolkit libraries)."
+        if [[ -f "${BUILD_DIR}/relabel.json" ]] && grep -q "\"to\":\"${RELEASE_TAG}\"" "${BUILD_DIR}/relabel.json"; then
+            echo "Tested: the ctest suite passed (log attached) on the same commit built as $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["from"])' "${BUILD_DIR}/relabel.json"); this release was relabelled from it without rerunning the suite, after tuned/relabel.sh showed the rebuilt binaries differ from the tested ones only in the release label (section-by-section comparison of every ELF file). The tarball was checked as extracted (version, ldd, RUNPATH, toolkit libraries) and installed with install.sh."
+        else
+            echo "Tested: the ctest suite passed on this build (log attached), and the tarball was checked as extracted (version, ldd, RUNPATH, toolkit libraries)."
+        fi
         echo ""
         echo "${COMPAT_NOTES}"
     } > "${NOTES_FILE}"
