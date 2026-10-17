@@ -56,21 +56,10 @@ REPODIR="$(cd "${GPU_TUNED_SELF_DIR}/.." && pwd)"
 : "${LLAMA_TUNED_BUILD_COMMIT:=$(git -C "${REPODIR}" rev-parse --short HEAD 2>/dev/null || echo unknown)}"
 export LLAMA_TUNED_BUILD_NUMBER LLAMA_TUNED_BUILD_COMMIT
 
-# --- CUDA toolkit: chosen from tuned/common-data/toolkits, never inferred from
-#     /usr/local/cuda or from what is installed. CUDA_TAG (cu133) or CUDA_VER
-#     (13.3) select one; neither set is an error listing the defined ones (no default). ---
-_llama_tk="${CUDA_TAG:-}"
-_llama_req_ver="${CUDA_VER:-}"
-if [ -z "${_llama_tk}" ] && [ -n "${_llama_req_ver}" ]; then
-    _llama_tk="cu${_llama_req_ver//./}"                         # 13.3 -> cu133
-fi
-gpu_tuned_load_toolkit "${GPU_TUNED_DATA_DIR}" "${GPU_TUNED_VARIANT}" "${_llama_tk}" || return 1 2>/dev/null || exit 1
-if [ -n "${_llama_req_ver}" ] && [ "${_llama_req_ver}" != "${TOOLKIT_CUDA_VER}" ]; then
-    echo "[tuned/env] ERROR: CUDA_VER=${_llama_req_ver} conflicts with toolkit ${CUDA_TAG} (CUDA ${TOOLKIT_CUDA_VER})." >&2
-    return 1 2>/dev/null || exit 1
-fi
-unset _llama_tk _llama_req_ver
-gpu_tuned_verify_toolkit || return 1 2>/dev/null || exit 1
+# --- CUDA toolkit: named by CUDA_TAG (cu133) or CUDA_VER (13.3), never defaulted or guessed; loaded from
+#     tuned/common-data/toolkits and verified (docs/ARCHITECTURE.md B4). Exports CUDA_VER, CUDA_TAG, CUDA_HOME
+#     and puts $CUDA_HOME/bin on PATH. ---
+gpu_tuned_select_toolkit "${GPU_TUNED_DATA_DIR}" "${GPU_TUNED_VARIANT}" || return 1 2>/dev/null || exit 1
 
 # --- Repo-specific settings (CMake flags, ...), loaded last; may not change
 #     any shared device/toolkit key. ---
