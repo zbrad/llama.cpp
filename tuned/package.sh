@@ -28,7 +28,7 @@ echo "llama.cpp ${GPU_TUNED_HW_LABEL} Package"
 echo "===================================================="
 echo ""
 echo "  Build dir : ${BIN_DIR}"
-echo "  Build     : ${LLAMA_TUNED_BUILD_NUMBER} (${LLAMA_TUNED_BUILD_COMMIT})"
+echo "  Commit    : ${LLAMA_TUNED_BUILD_COMMIT}"
 echo "  CUDA      : ${CUDA_TAG}"
 echo ""
 
@@ -289,10 +289,10 @@ if [[ "${release_line}" == "release: ${RELEASE_TAG}" ]]; then
 else
     pkg_fail "extracted llama-server-tuned prints '${release_line}', expected 'release: ${RELEASE_TAG}'"
 fi
-if [[ "${version_line}" == *"(build ${LLAMA_TUNED_BUILD_NUMBER}, commit ${LLAMA_TUNED_BUILD_COMMIT})"* ]]; then
+if [[ "${version_line}" == *", commit ${LLAMA_TUNED_BUILD_COMMIT})"* ]]; then
     pkg_ok "extracted llama-server-tuned reports ${version_line#version: }"
 else
-    pkg_fail "extracted llama-server-tuned reports '${version_line}', expected (build ${LLAMA_TUNED_BUILD_NUMBER}, commit ${LLAMA_TUNED_BUILD_COMMIT})"
+    pkg_fail "extracted llama-server-tuned reports '${version_line}', expected commit ${LLAMA_TUNED_BUILD_COMMIT}"
 fi
 for f in "${CHECK_DIR}"/*; do
     [[ -f "${f}" && ! -L "${f}" ]] || continue
@@ -317,7 +317,6 @@ fi
 cat > "${DIST_DIR}/package-info.txt" <<INFO
 tarball=$(basename "${TARBALL}")
 release_tag=${RELEASE_TAG}
-build_number=${LLAMA_TUNED_BUILD_NUMBER}
 build_commit=${LLAMA_TUNED_BUILD_COMMIT}
 cuda_tag=${CUDA_TAG}
 variant=${GPU_TUNED_VARIANT}

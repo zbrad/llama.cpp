@@ -32,7 +32,7 @@ gpu_tuned_verify_toolkit_libs "${BUILD_DIR}/bin/llama-server" || { echo "ERROR: 
 {
     echo "llama.cpp full test suite -- variant=${GPU_TUNED_VARIANT} cuda=${CUDA_VER} (${CUDA_TAG})"
     echo "started: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    echo "commit:  ${LLAMA_TUNED_BUILD_COMMIT} (build ${LLAMA_TUNED_BUILD_NUMBER})"
+    echo "commit:  ${LLAMA_TUNED_BUILD_COMMIT}"
     echo "release: $(cat "${BUILD_DIR}/release-label" 2>/dev/null || echo unknown)"
     echo "build:   ${BUILD_DIR}"
     echo "gates: toolkit libs resolve under ${CUDA_HOME}"

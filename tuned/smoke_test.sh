@@ -28,7 +28,7 @@ LOG="${DIST_DIR}/SMOKE_RESULTS_${GPU_TUNED_VARIANT}.log"
 [[ -f "${INFO}" ]] || { echo "ERROR: ${INFO} not found. Run tuned/package.sh ${GPU_TUNED_VARIANT} first." >&2; exit 1; }
 info() { sed -n "s/^$1=//p" "${INFO}"; }
 TARBALL="${DIST_DIR}/$(info tarball)"; WANT_SHA="$(info sha256)"; RELEASE_TAG="$(info release_tag)"
-BUILD_NUMBER="$(info build_number)"; BUILD_COMMIT="$(info build_commit)"
+BUILD_COMMIT="$(info build_commit)"
 [[ -f "${TARBALL}" ]] || { echo "ERROR: ${TARBALL} not found." >&2; exit 1; }
 
 WORK="$(mktemp -d)"
@@ -61,20 +61,20 @@ run() {
     ver="$(LD_LIBRARY_PATH="${INSTALL_DIR}" "${INSTALL_DIR}/llama-server-tuned" --version 2>&1 | grep -m1 '^version:' || true)"
     rel="$(LD_LIBRARY_PATH="${INSTALL_DIR}" "${INSTALL_DIR}/llama-server-tuned" --version 2>&1 | grep -m1 '^release:' || true)"
     [[ "${rel}" == "release: ${RELEASE_TAG}" ]] && ok "installed llama-server-tuned prints ${rel}" || fail "installed llama-server-tuned prints '${rel}', expected 'release: ${RELEASE_TAG}'"
-    if [[ "${ver}" == *"(build ${BUILD_NUMBER}, commit ${BUILD_COMMIT})"* ]]; then
+    if [[ "${ver}" == *", commit ${BUILD_COMMIT})"* ]]; then
         ok "installed llama-server-tuned reports ${ver#version: }"
     else
-        fail "installed llama-server-tuned reports '${ver}', expected (build ${BUILD_NUMBER}, commit ${BUILD_COMMIT})"
+        fail "installed llama-server-tuned reports '${ver}', expected commit ${BUILD_COMMIT}"
     fi
 
     # The build info: the stamp in the installed binary names this release and this commit, and the shipped
     # BUILD_INFO.json is that same stamp.
     if gpu_tuned_verify_build_info_json "${INSTALL_DIR}/llama-server-tuned" "release=${RELEASE_TAG}" "variant=${GPU_TUNED_VARIANT}" \
-        "cuda.tag=${CUDA_TAG}" "fork.commit_count:int=${BUILD_NUMBER}" 2>&1 \
+        "cuda.tag=${CUDA_TAG}" 2>&1 \
         && [[ "$(gpu_tuned_read_build_info "${INSTALL_DIR}/llama-server-tuned")" == "$(tr -d '\n' < "${INSTALL_DIR}/BUILD_INFO.json")" ]]; then
         ok "the installed stamp names ${RELEASE_TAG}, and BUILD_INFO.json is that same stamp"
     else
-        fail "the installed build info does not name ${RELEASE_TAG} / commit count ${BUILD_NUMBER}, or BUILD_INFO.json differs from the stamp"
+        fail "the installed build info does not name ${RELEASE_TAG}, or BUILD_INFO.json differs from the stamp"
     fi
 
     # NCCL: the stamp names where it came from, and the install matches: static means no libnccl.so anywhere.

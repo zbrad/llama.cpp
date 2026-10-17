@@ -8,10 +8,10 @@
 # gpu_tuned_verify_arch/embed_build_info function signatures) so a reader
 # already familiar with those doesn't have to relearn a different
 # convention here. llama.cpp itself has no VERSION file (unlike the RAPIDS
-# repos) -- its own build system already derives BUILD_NUMBER as
-# `git rev-list --count HEAD` (see cmake/build-info.cmake) and BUILD_COMMIT
-# as `git rev-parse --short HEAD`; this file derives those the same way so
-# a release tag always matches what `llama-cli --version` itself reports.
+# repos) -- its own build system derives the commit as `git rev-parse --short HEAD`
+# (see cmake/build-info.cmake); this file derives it the same way so the packager can check that the
+# binary was built from this source. The commit COUNT that `--version` also prints names nothing here
+# (docs/ARCHITECTURE.md E6); the release identity is the date label.
 #
 #   CUDA_TAG=cu133 bash tuned/package.sh gb10     (or CUDA_VER=13.3)
 #
@@ -44,17 +44,16 @@ source "${GPU_TUNED_SELF_DIR}/common.sh" || return 1 2>/dev/null || exit 1
 
 gpu_tuned_assert_platform "${GPU_TUNED_PLATFORM}" "${GPU_TUNED_VARIANT}" || return 1 2>/dev/null || exit 1
 
-# --- Build number: same derivation as cmake/build-info.cmake (commit count), so it matches what
-#     `llama-server --version` reports; tuned/package.sh checks that. It is NOT the identity of a
-#     release: that is the UTC date label (v0.<date>.<seq>-<variant>-<cuda>) package.sh allocates. ---
+# --- Build commit: same derivation as cmake/build-info.cmake, so it matches what `llama-server --version`
+#     reports; tuned/package.sh checks that. It is NOT the identity of a release: that is the UTC date
+#     label (v0.<date>.<seq>-<variant>-<cuda>) package.sh allocates. ---
 REPODIR="$(cd "${GPU_TUNED_SELF_DIR}/.." && pwd)"
-# Respect pre-set overrides (e.g. when re-packaging an already-built binary
+# Respect a pre-set override (e.g. when re-packaging an already-built binary
 # after a tooling-only commit that didn't require a rebuild -- the git-HEAD
 # derivation below would otherwise mismatch what `llama-cli --version`
 # actually reports for that binary).
-: "${LLAMA_TUNED_BUILD_NUMBER:=$(git -C "${REPODIR}" rev-list --count HEAD 2>/dev/null || echo 0)}"
 : "${LLAMA_TUNED_BUILD_COMMIT:=$(git -C "${REPODIR}" rev-parse --short HEAD 2>/dev/null || echo unknown)}"
-export LLAMA_TUNED_BUILD_NUMBER LLAMA_TUNED_BUILD_COMMIT
+export LLAMA_TUNED_BUILD_COMMIT
 
 # --- CUDA toolkit: named by CUDA_TAG (cu133) or CUDA_VER (13.3), never defaulted or guessed; loaded from
 #     tuned/common-data/toolkits and verified (docs/ARCHITECTURE.md B4). Exports CUDA_VER, CUDA_TAG, CUDA_HOME

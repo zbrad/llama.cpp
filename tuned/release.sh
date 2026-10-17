@@ -40,9 +40,8 @@ done
 PKG_INFO="${REPODIR}/dist/${VARIANT}/package-info.txt"
 if [[ -f "${PKG_INFO}" ]]; then
     BIN_TAG="$(sed -n 's/^release_tag=//p' "${PKG_INFO}")"
-    LLAMA_TUNED_BUILD_NUMBER="$(sed -n 's/^build_number=//p' "${PKG_INFO}")"
     LLAMA_TUNED_BUILD_COMMIT="$(sed -n 's/^build_commit=//p' "${PKG_INFO}")"
-    export LLAMA_TUNED_BUILD_NUMBER LLAMA_TUNED_BUILD_COMMIT
+    export LLAMA_TUNED_BUILD_COMMIT
 fi
 
 # shellcheck source=env.sh
@@ -58,7 +57,7 @@ echo "===================================================="
 echo "llama.cpp ${GPU_TUNED_HW_LABEL} Release  ($([[ ${PUBLISH} -eq 1 ]] && echo PUBLISH || echo "dry run"))"
 echo "===================================================="
 echo "  Binary tag  : ${BIN_TAG:-<no package yet>}"
-echo "  Build       : ${LLAMA_TUNED_BUILD_NUMBER} (${LLAMA_TUNED_BUILD_COMMIT})"
+echo "  Commit      : ${LLAMA_TUNED_BUILD_COMMIT}"
 echo "  CUDA        : ${CUDA_TAG}"
 echo ""
 
@@ -211,7 +210,7 @@ if [[ ${FAILURES} -gt 0 ]]; then
     exit 1
 fi
 
-RELEASE_TITLE="llama.cpp ${BIN_TAG#v} (build ${LLAMA_TUNED_BUILD_NUMBER}, ${LLAMA_TUNED_BUILD_COMMIT}) — ${GPU_TUNED_HW_LABEL} (${CUDA_TAG})"
+RELEASE_TITLE="llama.cpp ${BIN_TAG#v} (${LLAMA_TUNED_BUILD_COMMIT}) — ${GPU_TUNED_HW_LABEL} (${CUDA_TAG})"
 
 # --- Publish (only with --publish) ---
 echo ""
