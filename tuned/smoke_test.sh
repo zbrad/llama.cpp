@@ -82,7 +82,7 @@ run() {
     if [[ -n "${LLAMA_TUNED_NCCL_DIR}" ]]; then
         if gpu_tuned_verify_build_info_json "${INSTALL_DIR}/llama-server-tuned" "deps.nccl.tag=${LLAMA_TUNED_NCCL_TAG}" "deps.nccl.version=${LLAMA_TUNED_NCCL_VERSION}" deps.nccl.linkage=static 2>&1 \
             && [[ -z "$(find "${INSTALL_DIR}" -maxdepth 1 -name 'libnccl*' -print -quit)" ]] \
-            && ! readelf -d "${INSTALL_DIR}"/libggml-cuda-tuned.so.0.* 2>/dev/null | grep -q 'Shared library: \[libnccl'; then
+            && ! readelf -d "${INSTALL_DIR}"/libggml-cuda-"${GPU_TUNED_VARIANT}-${CUDA_TAG}".so.0.* 2>/dev/null | grep -q 'Shared library: \[libnccl'; then
             ok "NCCL ${LLAMA_TUNED_NCCL_VERSION} from zbrad/nccl ${LLAMA_TUNED_NCCL_TAG}: stamped, linked statically, no libnccl.so installed or needed"
         else
             fail "NCCL: expected the stamp to name zbrad/nccl ${LLAMA_TUNED_NCCL_TAG} (static) and no libnccl.so in the install"
@@ -96,8 +96,9 @@ run() {
     # The installed files are flat (INSTALL_DIR itself is the lib dir), so it goes on the path first.
     export GPU_TUNED_SMOKE_LD_EXTRA="${INSTALL_DIR}:${GPU_TUNED_TOOLKIT_LIB_DIR}"
     gpu_tuned_verify_resolves_in "${INSTALL_DIR}" "${INSTALL_DIR}/llama-server-tuned" \
-        '^libllama-server-impl-tuned\.so' '^libllama-tuned\.so' '^libllama-common-tuned\.so' '^libggml-tuned\.so' '^libggml-cuda-tuned\.so' 2>&1 \
-        && ok "libllama-server-impl, libllama, libllama-common, libggml, libggml-cuda (all -tuned) resolve inside the install directory" \
+        "^libllama-server-impl-${GPU_TUNED_VARIANT}-${CUDA_TAG}\\.so" "^libllama-${GPU_TUNED_VARIANT}-${CUDA_TAG}\\.so" "^libllama-common-${GPU_TUNED_VARIANT}-${CUDA_TAG}\\.so" \
+        "^libggml-${GPU_TUNED_VARIANT}-${CUDA_TAG}\\.so" "^libggml-cuda-${GPU_TUNED_VARIANT}-${CUDA_TAG}\\.so" 2>&1 \
+        && ok "libllama-server-impl, libllama, libllama-common, libggml, libggml-cuda (all -${GPU_TUNED_VARIANT}-${CUDA_TAG}) resolve inside the install directory" \
         || fail "libraries do not resolve inside the install directory"
 
     cmp -s "${INSTALL_DIR}/llmsrv.sh" "${REPODIR}/tuned/llmsrv.sh" && cmp -s "${INSTALL_DIR}/models/aliases.json" "${REPODIR}/models/aliases.json" \

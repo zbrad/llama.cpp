@@ -102,6 +102,7 @@ STAGE="$(mktemp -d)"
 # Provenance manifests (outside STAGE, so they never ship): the shared objects THIS build
 # produced, which get a unique identity below, and the bundled system libraries, which do not.
 OURS_MANIFEST="$(mktemp)"
+OURS_NAMES=()
 SYSTEM_MANIFEST="$(mktemp)"
 trap 'rm -rf "${STAGE}" "${OURS_MANIFEST}" "${SYSTEM_MANIFEST}"' EXIT
 for b in "${BINARIES[@]}"; do
@@ -116,11 +117,11 @@ for so in "${SO_FILES[@]}"; do
     # machine's own build/bin/ via the RUNPATH stripped below, meaning it
     # only ever "worked" by accident on the machine it was built on).
     so_name="$(basename "${so}")"
-    echo "${so_name}" >> "${OURS_MANIFEST}"
+    OURS_NAMES+=("${so_name}")
     soname="$(readelf -d "${so}" 2>/dev/null | grep -oP '(?<=Library soname: \[)[^\]]+')"
     if [[ -n "${soname}" && "${soname}" != "${so_name}" ]]; then
         cp -p "${so}" "${STAGE}/${soname}"
-        echo "${soname}" >> "${OURS_MANIFEST}"
+        OURS_NAMES+=("${soname}")
     fi
 done
 
@@ -228,7 +229,7 @@ for f in "${STAGE}"/*; do
     fi
 done
 
-# Give every shared object this build produced a unique identity (libggml.so.0 -> libggml-tuned.so.0,
+# Give every shared object this build produced a unique identity (libggml.so.0 -> libggml-gb10-cu133.so.0,
 # file name, SONAME and every DT_NEEDED that names it), so a stock llama.cpp installed beside this one,
 # or an LD_LIBRARY_PATH pointing at one, cannot swap libraries with ours in either direction. See
 # "unique shared-object identities" in tuned-common's tuned-common.sh. The rename is a patchelf pass
@@ -243,7 +244,11 @@ echo ""
 echo "Giving this build's shared objects unique identities:"
 # gpu_tuned_rename_package renames, then fails closed: every shared object is tuned, or a recorded
 # bundled system library; every DT_NEEDED resolves inside the stage or is assumed present on the target
+# The mark each library takes follows its CONTENTS (docs/ARCHITECTURE.md F1): device code, or a NEEDed variant-named
+# library, takes -<variant>-<toolkit> (libggml-cuda, and so libggml, libllama and the tool impls); the rest -<toolkit>.
+gpu_tuned_axes_manifest "${STAGE}" "${GPU_TUNED_VARIANT}" "${CUDA_TAG}" "${OURS_MANIFEST}" "${OURS_NAMES[@]}" || exit 1
 gpu_tuned_rename_package "${STAGE}" "${OURS_MANIFEST}" "${SYSTEM_MANIFEST}" "" "${ASSUME_PRESENT_RE}"
+gpu_tuned_verify_so_axes "${STAGE}" "${GPU_TUNED_VARIANT}" "${CUDA_TAG}" "${SYSTEM_MANIFEST}" || exit 1
 # patchelf rewrote the stamped files; prove the stamp survived on the server and on every staged ggml-cuda copy
 gpu_tuned_verify_build_info_json "${STAGE}/llama-server-tuned" "release=${RELEASE_TAG}" component=llama-server-tuned "variant=${GPU_TUNED_VARIANT}" "cuda.tag=${CUDA_TAG}" >/dev/null || exit 1
 STAGED_CUDA_N=0
