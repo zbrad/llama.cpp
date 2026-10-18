@@ -4,7 +4,7 @@
 #
 #   CUDA_TAG=cu133 bash tuned/full_test.sh gb10
 #
-# The log is build-tuned/<cuda-tag>/<variant>/TEST_RESULTS_<variant>.log and ends with a
+# The log is tuned/build/<cuda-tag>/releases/TEST_RESULTS_<variant>.log and ends with a
 # "Full test suite summary" line. tuned/release.sh refuses to publish unless that log shows a
 # pass and is newer than the built libraries and binaries.
 #
@@ -21,6 +21,7 @@ source "${REPODIR}/tuned/env.sh" "${GPU_TUNED_ARG_VARIANT}" || exit 1
 
 BUILD_DIR="${LLAMA_TUNED_BUILD_DIR}"
 RESULTS_FILE="${LLAMA_TUNED_TEST_LOG}"
+mkdir -p "${LLAMA_TUNED_RELEASES_DIR}"
 [ -f "${BUILD_DIR}/CTestTestfile.cmake" ] && [ -x "${BUILD_DIR}/bin/llama-server" ] \
     || { echo "ERROR: no finished build in ${BUILD_DIR}. Run tuned/build.sh ${GPU_TUNED_ARG_VARIANT} for ${CUDA_TAG} first." >&2; exit 1; }
 

@@ -1,6 +1,6 @@
 #!/bin/bash
 # tuned/build.sh <variant> — configure and build llama.cpp for ONE variant and ONE CUDA toolkit
-# into build-tuned/<cuda-tag>/<variant>/ (never the shared build/ the local units run).
+# into tuned/build/<cuda-tag>/cmake/ (never the shared build/ the local units run).
 #
 #   CUDA_TAG=cu133 bash tuned/build.sh gb10      # or CUDA_VER=13.3; one of them is required
 #

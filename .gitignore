@@ -182,3 +182,6 @@ a.out.*
 
 AGENTS.local.md
 .pi/SYSTEM.md
+
+# tuned-builds per-toolkit output tree
+/tuned/build/

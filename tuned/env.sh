@@ -64,16 +64,21 @@ gpu_tuned_select_toolkit "${GPU_TUNED_DATA_DIR}" "${GPU_TUNED_VARIANT}" || retur
 #     any shared device/toolkit key. ---
 gpu_tuned_load_repo_env "${GPU_TUNED_SELF_DIR}/repo.env" || return 1 2>/dev/null || exit 1
 
-# --- Output layout: one build tree per toolkit and variant, build-tuned/<cuda-tag>/<variant>/
-#     (matched by the repo's /build* ignore, and apart from build/, which the local units run),
-#     so two toolkits never share a CMake cache. The test log sits next to it; the release gate
-#     reads it. LLAMA_TUNED_BUILD_DIR overrides the tree (the cache check in build.sh still
-#     applies). ccache is per toolkit too. ---
-LLAMA_TUNED_BUILD_ROOT="${REPODIR}/build-tuned"
-: "${LLAMA_TUNED_BUILD_DIR:=$(gpu_tuned_cuda_subdir "${LLAMA_TUNED_BUILD_ROOT}" "${CUDA_TAG}" "${GPU_TUNED_VARIANT}")}" || return 1 2>/dev/null || exit 1
-LLAMA_TUNED_TEST_LOG="${LLAMA_TUNED_BUILD_DIR}/TEST_RESULTS_${GPU_TUNED_VARIANT}.log"
-export LLAMA_TUNED_BUILD_DIR LLAMA_TUNED_TEST_LOG
-export CCACHE_DIR="${LLAMA_TUNED_BUILD_ROOT}/${CUDA_TAG}/ccache"
+# --- Output layout: one tree per toolkit, tuned/build/<cuda-tag>/ (gitignored), with no variant level
+#     (docs/ARCHITECTURE.md C2): cmake/ (the one fixed compile path, apart from build/, which the local
+#     units run), dist/ (tarball, sidecar, package-info.txt), releases/ (generated test and smoke logs; the
+#     tracked RELEASE_NOTES_*.md stay in tuned/releases/), ccache/, nccl/<tag>/. The claim refuses a tree
+#     last used by another variant. LLAMA_TUNED_BUILD_DIR overrides the cmake tree (the cache check in
+#     build.sh still applies). ---
+GPU_TUNED_REPO_ROOT="${REPODIR}"
+gpu_tuned_claim_toolkit_tree "${GPU_TUNED_REPO_ROOT}" "${CUDA_TAG}" "${GPU_TUNED_VARIANT}" || return 1 2>/dev/null || exit 1
+LLAMA_TUNED_BUILD_ROOT="${GPU_TUNED_REPO_ROOT}/tuned/build/${CUDA_TAG}"
+: "${LLAMA_TUNED_BUILD_DIR:=$(gpu_tuned_out_dir build "${GPU_TUNED_REPO_ROOT}" "${CUDA_TAG}" "${GPU_TUNED_VARIANT}")}" || return 1 2>/dev/null || exit 1
+LLAMA_TUNED_DIST_DIR="$(gpu_tuned_out_dir dist "${GPU_TUNED_REPO_ROOT}" "${CUDA_TAG}" "${GPU_TUNED_VARIANT}")"
+LLAMA_TUNED_RELEASES_DIR="$(gpu_tuned_out_dir releases "${GPU_TUNED_REPO_ROOT}" "${CUDA_TAG}" "${GPU_TUNED_VARIANT}")"
+LLAMA_TUNED_TEST_LOG="${LLAMA_TUNED_RELEASES_DIR}/TEST_RESULTS_${GPU_TUNED_VARIANT}.log"
+export LLAMA_TUNED_BUILD_DIR LLAMA_TUNED_DIST_DIR LLAMA_TUNED_RELEASES_DIR LLAMA_TUNED_TEST_LOG
+export CCACHE_DIR="${LLAMA_TUNED_BUILD_ROOT}/ccache"
 export CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-20G}"
 
 # --- NCCL: GGML_CUDA_NCCL=ON links NCCL, and the toolkit decides where it comes from. A toolkit with a line in
@@ -84,8 +89,8 @@ export CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-20G}"
 LLAMA_TUNED_NCCL_DIR=""; LLAMA_TUNED_NCCL_TAG=""; LLAMA_TUNED_NCCL_VERSION=""
 _nccl_tag="$(awk -v v="${GPU_TUNED_VARIANT}" -v c="${CUDA_TAG}" '$1 !~ /^#/ && $1==v && $2==c {print $3}' "${GPU_TUNED_SELF_DIR}/nccl.pins" 2>/dev/null)"
 if [ -n "${_nccl_tag}" ]; then
-    gpu_tuned_fetch_nccl_release "${_nccl_tag}" "${LLAMA_TUNED_BUILD_ROOT}/${CUDA_TAG}/nccl/${_nccl_tag}" || { unset _nccl_tag; return 1 2>/dev/null || exit 1; }
-    LLAMA_TUNED_NCCL_DIR="${LLAMA_TUNED_BUILD_ROOT}/${CUDA_TAG}/nccl/${_nccl_tag}"
+    gpu_tuned_fetch_nccl_release "${_nccl_tag}" "${LLAMA_TUNED_BUILD_ROOT}/nccl/${_nccl_tag}" || { unset _nccl_tag; return 1 2>/dev/null || exit 1; }
+    LLAMA_TUNED_NCCL_DIR="${LLAMA_TUNED_BUILD_ROOT}/nccl/${_nccl_tag}"
     LLAMA_TUNED_NCCL_TAG="${_nccl_tag}"
     LLAMA_TUNED_NCCL_VERSION="$(sed -n 's/^nccl_version=//p' "${LLAMA_TUNED_NCCL_DIR}/BUILD_INFO" | head -1)"
     [ -n "${LLAMA_TUNED_NCCL_VERSION}" ] || { echo "[tuned/env] ERROR: ${LLAMA_TUNED_NCCL_DIR}/BUILD_INFO has no nccl_version." >&2; unset _nccl_tag; return 1 2>/dev/null || exit 1; }

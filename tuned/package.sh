@@ -1,6 +1,6 @@
 #!/bin/bash
 # tuned/package.sh <variant> — package the build tuned/build.sh made (and tuned/full_test.sh
-# tested) for ONE variant and ONE CUDA toolkit into dist/<variant>/llama-cpp-0.<date>.<seq>-<variant>-<cuda>.tar.gz
+# tested) for ONE variant and ONE CUDA toolkit into tuned/build/<cuda-tag>/dist/llama-cpp-0.<date>.<seq>-<variant>-<cuda>.tar.gz
 # with a .sha256 sidecar and package-info.txt, then check the tarball as a consumer gets it
 # (extract, version, ldd, RUNPATH, toolkit libs). It packages only: no tag, no publishing.
 # tuned/release.sh publishes exactly these files, with the tracked release notes
@@ -20,7 +20,7 @@ GPU_TUNED_ARG_VARIANT="${1:?usage: tuned/package.sh <variant>}"
 # shellcheck source=env.sh
 source "${REPODIR}/tuned/env.sh" "${GPU_TUNED_ARG_VARIANT}" || exit 1
 
-BUILD_DIR="${LLAMA_TUNED_BUILD_DIR}"   # from env.sh: build-tuned/<cuda-tag>/<variant>
+BUILD_DIR="${LLAMA_TUNED_BUILD_DIR}"   # from env.sh: tuned/build/<cuda-tag>/cmake
 BIN_DIR="${BUILD_DIR}/bin"
 
 echo "===================================================="
@@ -93,7 +93,7 @@ RELEASE_TAG="$(head -1 "${BUILD_DIR}/release-label")"
 gpu_tuned_check_release_tag "${RELEASE_TAG}" || exit 1
 [[ "${RELEASE_TAG}" == v0.*-"${GPU_TUNED_VARIANT}-${CUDA_TAG}" ]] || { echo "ERROR: the build's release ${RELEASE_TAG} is not for ${GPU_TUNED_VARIANT}-${CUDA_TAG}." >&2; exit 1; }
 echo "  Release   : ${RELEASE_TAG}"
-DIST_DIR="${REPODIR}/dist/${GPU_TUNED_VARIANT}"
+DIST_DIR="${LLAMA_TUNED_DIST_DIR}"
 rm -rf "${DIST_DIR}"
 mkdir -p "${DIST_DIR}"
 TARBALL="${DIST_DIR}/llama-cpp-${RELEASE_TAG#v}.tar.gz"

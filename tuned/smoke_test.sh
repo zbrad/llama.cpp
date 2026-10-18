@@ -13,7 +13,7 @@
 #   4. the installed llmsrv.sh and models/aliases.json are the ones in this checkout.
 # A smoke test, not the suite: tuned/full_test.sh already ran every ctest against the build tree. What is
 # new here is that the files a user gets are the ones running. Needs network access for the ~1 MB model
-# (install.sh's own check). Writes dist/<variant>/SMOKE_RESULTS_<variant>.log; tuned/release.sh requires a
+# (install.sh's own check). Writes tuned/build/<cuda-tag>/releases/SMOKE_RESULTS_<variant>.log; tuned/release.sh requires a
 # passing log newer than the tarball.
 set -uo pipefail
 
@@ -22,9 +22,10 @@ GPU_TUNED_ARG_VARIANT="${1:?usage: tuned/smoke_test.sh <variant>}"
 # shellcheck source=env.sh
 source "${REPODIR}/tuned/env.sh" "${GPU_TUNED_ARG_VARIANT}" || exit 1
 
-DIST_DIR="${REPODIR}/dist/${GPU_TUNED_VARIANT}"
+DIST_DIR="${LLAMA_TUNED_DIST_DIR}"
 INFO="${DIST_DIR}/package-info.txt"
-LOG="${DIST_DIR}/SMOKE_RESULTS_${GPU_TUNED_VARIANT}.log"
+mkdir -p "${LLAMA_TUNED_RELEASES_DIR}"
+LOG="${LLAMA_TUNED_RELEASES_DIR}/SMOKE_RESULTS_${GPU_TUNED_VARIANT}.log"
 [[ -f "${INFO}" ]] || { echo "ERROR: ${INFO} not found. Run tuned/package.sh ${GPU_TUNED_VARIANT} first." >&2; exit 1; }
 info() { sed -n "s/^$1=//p" "${INFO}"; }
 TARBALL="${DIST_DIR}/$(info tarball)"; WANT_SHA="$(info sha256)"; RELEASE_TAG="$(info release_tag)"

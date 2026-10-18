@@ -36,21 +36,22 @@ for arg in "$@"; do
 done
 [[ -n "${VARIANT}" ]] || { echo "usage: tuned/release.sh <variant> [--publish] [--preflight-only]" >&2; exit 2; }
 
+# shellcheck source=env.sh
+source "${REPODIR}/tuned/env.sh" "${VARIANT}" || exit 1
+
 # The build identity comes from the package, not HEAD: notes-only commits after packaging move HEAD.
-PKG_INFO="${REPODIR}/dist/${VARIANT}/package-info.txt"
+# (env.sh only defaults LLAMA_TUNED_BUILD_COMMIT to HEAD; the package's value replaces it here.)
+PKG_INFO="${LLAMA_TUNED_DIST_DIR}/package-info.txt"
 if [[ -f "${PKG_INFO}" ]]; then
     BIN_TAG="$(sed -n 's/^release_tag=//p' "${PKG_INFO}")"
     LLAMA_TUNED_BUILD_COMMIT="$(sed -n 's/^build_commit=//p' "${PKG_INFO}")"
     export LLAMA_TUNED_BUILD_COMMIT
 fi
 
-# shellcheck source=env.sh
-source "${REPODIR}/tuned/env.sh" "${VARIANT}" || exit 1
-
 REPO="zbrad/llama.cpp"
 BRANCH="tuned-builds"
-BUILD_DIR="${LLAMA_TUNED_BUILD_DIR}"   # from env.sh: build-tuned/<cuda-tag>/<variant>
-DIST_DIR="${REPODIR}/dist/${GPU_TUNED_VARIANT}"
+BUILD_DIR="${LLAMA_TUNED_BUILD_DIR}"   # from env.sh: tuned/build/<cuda-tag>/cmake
+DIST_DIR="${LLAMA_TUNED_DIST_DIR}"
 BIN_TAG="${BIN_TAG:-}"   # from package-info.txt; the date label was allocated when packaging
 
 echo "===================================================="
@@ -176,7 +177,7 @@ else
         else
             ok "tarball was made after the tests"
         fi
-        SMOKE_LOG="${DIST_DIR}/SMOKE_RESULTS_${GPU_TUNED_VARIANT}.log"
+        SMOKE_LOG="${LLAMA_TUNED_RELEASES_DIR}/SMOKE_RESULTS_${GPU_TUNED_VARIANT}.log"
         if [[ ! -f "${SMOKE_LOG}" ]]; then
             fail "${SMOKE_LOG} not found; run tuned/smoke_test.sh ${VARIANT}"
         elif [[ "${TARBALL}" -nt "${SMOKE_LOG}" ]]; then
