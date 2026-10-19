@@ -27,7 +27,8 @@ Stages run in this order; each gate in the later stages refuses to run on a stal
 | 3. package | `bash tuned/package.sh gb10` | `tuned/build/<cuda>/dist/` tarball, `.sha256`, `package-info.txt`. Refuses a build from source other than HEAD. Writes a DRAFT `tuned/releases/RELEASE_NOTES_<label>.md` if none exists |
 | 4. smoke test | `bash tuned/smoke_test.sh gb10` | `tuned/build/<cuda>/releases/SMOKE_RESULTS_gb10.log`. Runs `install.sh` on the local tarball into a scratch directory and uses the result; nothing is published |
 | 5. notes | edit `tuned/releases/RELEASE_NOTES_<label>.md`, delete its DRAFT line, commit it | a tracked, reviewed notes file |
-| 6. release | `bash tuned/release.sh gb10 [--publish]` | Dry run by default: every gate really runs, nothing is published. With `--publish`, creates the GitHub release |
+| 6. release | `bash tuned/release.sh gb10` | Runs every gate; never publishes. Writes the ready-marker `tuned/build/<cuda>/releases/RELEASE_READY_gb10` if all pass |
+| 7. publish | `bash tuned/publish.sh gb10` | Publishes only what the gates saw (refuses if HEAD, the notes or an asset changed), creating the GitHub release |
 
 The later stages read `CUDA_TAG` / `CUDA_VER` the same way; set it for each command.
 

@@ -5,7 +5,7 @@
 #   CUDA_TAG=cu133 bash tuned/full_test.sh gb10
 #
 # The log is tuned/build/<cuda-tag>/releases/TEST_RESULTS_<variant>.log and ends with a
-# "Full test suite summary" line. tuned/release.sh refuses to publish unless that log shows a
+# "Full test suite summary" line. tuned/release.sh refuses to pass its gates unless that log shows a
 # pass and is newer than the built libraries and binaries.
 #
 # The whole suite runs, including the tests labelled "model": they fetch small models from

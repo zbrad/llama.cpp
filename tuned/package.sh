@@ -3,7 +3,7 @@
 # tested) for ONE variant and ONE CUDA toolkit into tuned/build/<cuda-tag>/dist/llama-cpp-0.<date>.<seq>-<variant>-<cuda>.tar.gz
 # with a .sha256 sidecar and package-info.txt, then check the tarball as a consumer gets it
 # (extract, version, ldd, RUNPATH, toolkit libs). It packages only: no tag, no publishing.
-# tuned/release.sh publishes exactly these files, with the tracked release notes
+# tuned/release.sh gates and tuned/publish.sh publishes exactly these files, with the tracked release notes
 # (tuned/releases/RELEASE_NOTES_0.<date>.<seq>_<variant>_<cuda>.md; a draft is written here if there is none).
 # Same split as raft, cuvs and faiss.
 #
@@ -11,7 +11,8 @@
 #   CUDA_TAG=cu133 bash tuned/package.sh gb10
 #   CUDA_TAG=cu133 bash tuned/smoke_test.sh gb10     # installs the package with install.sh and uses it
 #   (review and commit the notes, remove the DRAFT banner)
-#   CUDA_TAG=cu133 bash tuned/release.sh gb10 [--publish]
+#   CUDA_TAG=cu133 bash tuned/release.sh gb10        # gates only; never publishes
+#   CUDA_TAG=cu133 bash tuned/publish.sh gb10        # publishes what the gates saw
 set -euo pipefail
 
 REPODIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

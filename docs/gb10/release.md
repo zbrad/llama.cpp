@@ -6,8 +6,8 @@ procedure; to just install a published build, see the Quick Start in
 not describe this process.
 
 The flow is `tuned/build.sh`, `tuned/full_test.sh`, `tuned/package.sh`, `tuned/smoke_test.sh`, then
-`tuned/release.sh`, the same split as raft, cuvs and faiss. `release.sh` is a **dry run unless you
-pass `--publish`**: every gate really runs, but nothing is published.
+`tuned/release.sh`, then `tuned/publish.sh`, the same split as raft, cuvs and faiss. `release.sh` **never
+publishes**: it runs every gate and, if all pass, writes a ready-marker. `publish.sh` publishes only from that marker.
 
 ## What a release is
 
@@ -90,7 +90,7 @@ It holds `release` (the identity, first), `component`, `variant`, `hardware`, `a
    delete the DRAFT line, commit and push. This must be a notes-only commit: any other change after packaging
    means building, testing and packaging again (the gate refuses it, and the binaries carry the build number
    of the commit they were built from).
-4. **Dry run:**
+4. **Gates:**
 
    ```bash
    CUDA_TAG=cu133 bash tuned/release.sh gb10      # or CUDA_VER=13.3
@@ -98,8 +98,10 @@ It holds `release` (the identity, first), `component`, `variant`, `hardware`, `a
 
    One of `CUDA_TAG` or `CUDA_VER` is required: there is no default toolkit. With neither, the scripts fail and list
    the defined toolkits (run from a terminal they ask which to use, for that run only). For a preflight-only check
-   add `--preflight-only`.
-5. **Publish** by re-running with `--publish`. It creates the GitHub release targeting `tuned-builds` with the
+   add `--preflight-only`. When every gate passes it prints `READY` and writes `RELEASE_READY_<variant>` in the
+   toolkit's `releases/` directory.
+5. **Publish** with `CUDA_TAG=cu133 bash tuned/publish.sh gb10`. It refuses unless HEAD, the notes and every asset
+   are unchanged since the gates passed, then creates the GitHub release targeting `tuned-builds` with the
    tarball, its `.sha256`, the notes file, the test log and the smoke log. This is the only step that changes
    anything remote.
 
