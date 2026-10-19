@@ -57,9 +57,9 @@ It holds `release` (the identity, first), `component`, `variant`, `hardware`, `a
 1. **Build, test, package and smoke-test** at the commit being released, for one toolkit:
 
    ```bash
-   CUDA_TAG=cu133 bash tuned/build.sh gb10        # build-tuned/cu133/gb10/ (not the shared build/); allocates the label
-   CUDA_TAG=cu133 bash tuned/full_test.sh gb10    # ctest, all labels; log beside the build tree
-   CUDA_TAG=cu133 bash tuned/package.sh gb10      # dist/gb10/: tarball, .sha256, package-info.txt, a draft of the notes
+   CUDA_TAG=cu133 bash tuned/build.sh gb10        # tuned/build/cu133/cmake/ (not the repo root build/); allocates the label
+   CUDA_TAG=cu133 bash tuned/full_test.sh gb10    # ctest, all labels; log in tuned/build/cu133/releases/
+   CUDA_TAG=cu133 bash tuned/package.sh gb10      # tuned/build/cu133/dist/: tarball, .sha256, package-info.txt, a draft of the notes
    CUDA_TAG=cu133 bash tuned/smoke_test.sh gb10   # installs the tarball with install.sh and uses it
    ```
 
@@ -122,7 +122,7 @@ Preflight:
   unversioned `/usr/local/cuda` symlink is never used;
 - if the build directory is already configured, its CUDA compiler is that toolkit's `nvcc`.
 
-Test: either `build-tuned/<cuda-tag>/<variant>/TEST_RESULTS_<variant>.log` ends with
+Test: either `tuned/build/<cuda-tag>/releases/TEST_RESULTS_<variant>.log` ends with
 "Full test suite summary: ctest passed" and is newer than every `llama-*` binary and
 `lib*.so*` in the build's `bin/`. `package.sh` stamps only the staged copies, so packaging
 does not make the build newer than its tests. Or `<build>/relabel.json` is valid: it names this release as
@@ -130,7 +130,7 @@ its `to`, carries the hash and commit of that log, and is newer than the binarie
 
 Package: `package-info.txt` is for this toolkit; the tarball matches its `.sha256`, is
 newer than the test log (so it was made from the tested build), and a passing smoke log
-(`dist/<variant>/SMOKE_RESULTS_<variant>.log`) is newer than it; only files under
+(`tuned/build/<cuda-tag>/releases/SMOKE_RESULTS_<variant>.log`) is newer than it; only files under
 `tuned/releases/` changed between the packaged commit and `HEAD`.
 
 Notes: the notes file exists and no longer carries the DRAFT line.
@@ -198,5 +198,5 @@ that was published should not be re-pointed.
   copy `tuned/hostname-aliases.local.example`). If the file is missing the
   redaction is skipped silently, so create it before publishing. In notes and
   docs use the generic `geo-a-node-gb10-N` form, never real hostnames.
-- `dist/` is gitignored and holds the tarball, checksum and `package-info.txt`; the release
+- `tuned/build/<cuda-tag>/dist/` is gitignored and holds the tarball, checksum and `package-info.txt`; the release
   notes are the tracked file under `tuned/releases/`.
