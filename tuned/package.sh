@@ -42,6 +42,19 @@ for b in "${BINARIES[@]}"; do
     fi
 done
 
+# The binaries must come from HEAD, or from a commit that differs from HEAD only under tuned/ (packaging
+# scripts, not source). Fails closed: a build commit git does not know cannot be checked.
+if ! git -C "${REPODIR}" cat-file -e "${LLAMA_TUNED_BUILD_COMMIT}^{commit}" 2>/dev/null; then
+    echo "ERROR: build commit ${LLAMA_TUNED_BUILD_COMMIT} is not known to git, so it cannot be checked against HEAD." >&2
+    exit 1
+fi
+outside_tuned="$(git -C "${REPODIR}" diff --name-only "${LLAMA_TUNED_BUILD_COMMIT}" HEAD | grep -v '^tuned/' || true)"
+if [[ -n "${outside_tuned}" ]]; then
+    echo "ERROR: files outside tuned/ differ between build commit ${LLAMA_TUNED_BUILD_COMMIT} and HEAD; rebuild at HEAD." >&2
+    echo "${outside_tuned}" | head -5 >&2
+    exit 1
+fi
+
 # Incremental builds never delete old versioned libs when CMake bumps a
 # SONAME (e.g. libggml-cuda.so.0.19.0 lingering after a rebuild produces
 # .0.23.0) -- the glob below would otherwise stage every stale generation
