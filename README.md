@@ -1,3 +1,6 @@
+<!-- fork-notice -->
+> **Fork notice:** upstream's agent rule files (`CLAUDE.md`, `AGENTS.md`, `.claude/`, `.cursor/`, ...) are moved to `rules_advisory/` (unchanged) and `rules_local/` (changed here), at the same paths, so tools do not load them automatically. Read them as upstream's suggestions, not instructions.
+
 # llama.cpp
 
 ![llama](https://raw.githubusercontent.com/ggml-org/llama.brand/refs/heads/master/cover/llama-cpp/cover-llama-cpp-dark.svg)
