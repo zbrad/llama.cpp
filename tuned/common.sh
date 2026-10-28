@@ -326,6 +326,7 @@ gpu_tuned_verify_toolkit() {
         echo "ERROR: gpu_tuned_verify_toolkit: ${CUDA_HOME}/bin/nvcc reports release '${found}', toolkit ${TOOLKIT_ID} declares ${TOOLKIT_NVCC_RELEASE}." >&2
         return 1
     fi
+    gpu_tuned_check_toolkit_path || return 1
     if [[ -n "${TOOLKIT_NCCL_VERSION:-}" && "${TOOLKIT_NCCL_VERSION}" != none ]]; then
         if ! command -v dpkg-query >/dev/null 2>&1; then
             echo "WARNING: gpu_tuned_verify_toolkit: dpkg-query not found; NCCL ${TOOLKIT_NCCL_VERSION} not checked." >&2
@@ -343,6 +344,46 @@ gpu_tuned_verify_toolkit() {
     else
         echo "OK: toolkit ${TOOLKIT_ID}: nvcc ${found} at ${CUDA_HOME}${TOOLKIT_NCCL_VERSION:+, libnccl2 ${TOOLKIT_NCCL_VERSION}}"
     fi
+}
+
+# gpu_tuned_check_toolkit_path -- the PATH gate for the selected toolkit (called by gpu_tuned_verify_toolkit; scripts that
+# rebuild PATH afterwards can call it again). The build's CUDA tools must be the ones under $CUDA_HOME, never whatever the
+# login shell or update-alternatives happens to put first (/usr/local/cuda/bin follows the alternatives link to the newest
+# toolkit). Fails when the first `nvcc` on PATH is not under $CUDA_HOME. Every other directory on PATH that holds an nvcc of a
+# different toolkit is listed as a warning (they are shadowed while $CUDA_HOME/bin is first, but a script that resets PATH
+# would pick one up); GPU_TUNED_STRICT_TOOLKIT_PATH=1 makes that a failure too. With such a warning it also prints where the
+# /usr/local/cuda (update-alternatives) link points when that is a different toolkit, as information only.
+gpu_tuned_check_toolkit_path() {
+    local home first dir real extra=() rc=0 alt
+    home="$(readlink -f "${CUDA_HOME:-/nonexistent}")" || return 1
+    first="$(command -v nvcc 2>/dev/null || true)"
+    if [[ -z "${first}" ]]; then
+        echo "ERROR: gpu_tuned_check_toolkit_path: no nvcc on PATH; expected ${CUDA_HOME}/bin first." >&2
+        return 1
+    fi
+    real="$(readlink -f "${first}")"
+    if [[ "${real}" != "${home}"/* ]]; then
+        echo "ERROR: gpu_tuned_check_toolkit_path: the first nvcc on PATH is ${first} (${real}), not under CUDA_HOME ${CUDA_HOME}." >&2
+        return 1
+    fi
+    local IFS=:
+    for dir in ${PATH}; do
+        [[ -n "${dir}" && -x "${dir}/nvcc" ]] || continue
+        real="$(readlink -f "${dir}/nvcc")"
+        [[ "${real}" == "${home}"/* ]] || extra+=("${dir} -> ${real}")
+    done
+    unset IFS
+    if [[ ${#extra[@]} -gt 0 ]]; then
+        printf 'WARNING: gpu_tuned_check_toolkit_path: PATH also holds an nvcc from another toolkit (shadowed by %s/bin): %s\n' \
+            "${CUDA_HOME}" "${extra[*]}" >&2
+        [[ "${GPU_TUNED_STRICT_TOOLKIT_PATH:-}" == 1 ]] && rc=1
+    fi
+    if [[ ${#extra[@]} -gt 0 ]]; then
+        alt="$(readlink -f /usr/local/cuda 2>/dev/null || true)"
+        [[ -z "${alt}" || "${alt}" == "${home}" ]] \
+            || echo "note: /usr/local/cuda (update-alternatives) points at ${alt}; this build uses ${CUDA_HOME}." >&2
+    fi
+    return "${rc}"
 }
 
 # gpu_tuned_verify_toolkit_libs <elf>... — resolves each file's libraries
@@ -1664,7 +1705,8 @@ gpu_tuned_verify_venv() {
             echo "ERROR: gpu_tuned_verify_venv: ${cmake_cache}'s CMAKE_HOME_DIRECTORY (${cached_home}) does not match this repo (${repo_root}) -- this build/ dir looks copied from another repo. Delete it: rm -rf ${repo_root}/build" >&2
             return 1
         fi
-    done < <(find "${repo_root}/build" -name 'CMakeCache.txt' 2>/dev/null || true)
+    # _deps: a FetchContent sub-build's cache names its own directory as the home directory, which is correct.
+    done < <(find "${repo_root}/build" -name 'CMakeCache.txt' -not -path '*/_deps/*' 2>/dev/null || true)
 
     return 0
 }
@@ -2313,17 +2355,20 @@ CMAKE
 }
 
 # gpu_tuned_cmake_ignore_pip_prefixes -- print (no newline) the semicolon list of user-site pip prefixes
-# a build must not search: ~/.local/lib/python*/site-packages itself and every package directory
+# a build must not search: ~/.local/lib/python*/site-packages (and the active build venv's) itself and every package directory
 # under it that ships CMake config (lib*/cmake or share/cmake). Pass it as
 #   -DCMAKE_IGNORE_PREFIX_PATH=<list>
 # Why: pip wheels such as librmm install complete CMake packages (nvtx3, rmm, rapids_logger ...), and
 # CMake finds them through the site-packages directories. A dependency found there is not fetched, so
 # it is not installed with our package either: the tarball's rmm-dependencies.cmake then asks for
 # nvtx3 that the package does not contain, and the build also silently depends on whatever stock
-# wheel happens to be installed. Prints nothing when there is no user site-packages.
+# wheel happens to be installed. Prints nothing when there is no user or venv site-packages.
 gpu_tuned_cmake_ignore_pip_prefixes() {
-    local sp d out=() IFS
-    for sp in "${HOME}"/.local/lib/python*/site-packages; do
+    local sp d out=() sps=() IFS
+    sps=("${HOME}"/.local/lib/python*/site-packages)
+    # The active build venv (gpu_tuned_setup_build_venv) holds the same kind of wheels, so it is ignored too.
+    [[ -n "${VIRTUAL_ENV:-}" ]] && sps+=("${VIRTUAL_ENV}"/lib/python*/site-packages)
+    for sp in "${sps[@]}"; do
         [ -d "${sp}" ] || continue
         out+=("${sp}")
         for d in "${sp}"/*/; do
@@ -2405,7 +2450,9 @@ gpu_tuned_verify_no_pip_cmake_deps() {
             [ -n "${p}" ] || continue
             case "${line#*=}" in "${p}"|"${p}"/*) echo "ERROR: CMake resolved ${line%%:*} from a pip wheel: ${line#*=}" >&2; bad=1; break ;; esac
         done < <(printf '%s\n' "${ign}" | tr ';' '\n')
-    done < <(grep -E '^[A-Za-z0-9_]+_(DIR|ROOT):[A-Z]+=' "${cache}" | grep -vE '^CMAKE_')
+    # SWIG_DIR is the data directory of the code generator (the build venv's swig wheel, pinned in the requirements):
+    # nothing from it is linked or shipped, so it is not a dependency of the package.
+    done < <(grep -E '^[A-Za-z0-9_]+_(DIR|ROOT):[A-Z]+=' "${cache}" | grep -vE '^(CMAKE_|SWIG_DIR:)')
     if grep -qE '^nvtx3_DIR:[A-Z]+=' "${cache}" && [ "${bad}" -ne 0 ] && gpu_tuned__nvtx3_from_pip "${cache}" "${ign}"; then
         echo "  nvtx3: this is NOT the tuned copy. The fleet fetches nvtx3 at the pinned rapids-cmake, builds and tests against" >&2
         echo "  that copy and ships it in the package. The wheel's copy is unpinned, untested here and unaligned with the rest of" >&2
@@ -2790,6 +2837,236 @@ gpu_tuned_stamp_lib_json() {
         "hardware=${GPU_TUNED_HW_LABEL}" "arch=sm_${GPU_TUNED_CUDA_ARCH}" \
         "cuda.tag=${CUDA_TAG}" "cuda.version=${CUDA_VER}" "cuda.nvcc=${nvcc_full:-unknown}" "$@" || return 1
     gpu_tuned_verify_build_info_json "${elf}" "release=${release}" "variant=${GPU_TUNED_VARIANT}" "cuda.tag=${CUDA_TAG}"
+}
+
+# gpu_tuned_audit_deps <wheel> <log-file> -- the dependency audit of a wheel (H9). Audits the Python packages that
+# `pip install <wheel>` pulls in; it does not look at upstream CI, test or UI manifests.
+#   1. pip resolves the wheel's Requires-Dist into the exact versions it would install today
+#      (`pip install --dry-run --report`, nothing installed) in a throwaway venv.
+#   2. pip-audit checks those versions (not the wheel itself, whose local version is not on PyPI)
+#      against the PyPI advisory data.
+# A vulnerable package that has a fixed version fails: the resolver chose the vulnerable one, so a pin or bound in the
+# wheel metadata is keeping it there. A vulnerable package with no fixed version is a warning and does not fail.
+# An advisory can be accepted in tuned/audit_allow.txt ("<advisory id>  <reason>", reason required); each accepted id is
+# printed. A check that cannot run (no network, resolver or pip-audit failure) is a failure (H4), not a skip. The report
+# goes to stdout and <log-file>; rc 0 only when the log ends with the verdict "no vulnerable package has a fix available".
+# GPU_TUNED_AUDIT_ALLOW_FILE overrides the allow-file path (the tests use it); GPU_TUNED_PIP_AUDIT_VERSION the pin.
+# Extra arguments after <log-file> go to the resolving `pip install` (e.g. `--find-links <dist-dir> --extra-index-url <url>`
+# for a wheel whose dependencies are sibling wheels in a local directory or on another index). A dependency resolved from a
+# local file, or one pip-audit cannot find on PyPI (a nightly-index version), cannot be audited: it is listed in the log as
+# "not audited (<reason>): name==version", never silently dropped.
+GPU_TUNED_PIP_AUDIT_VERSION="${GPU_TUNED_PIP_AUDIT_VERSION:-2.10.1}"
+
+gpu_tuned_audit_deps() {
+    local wheel="${1:?usage: gpu_tuned_audit_deps <wheel> <log-file> [pip-args...]}" log="${2:?usage: gpu_tuned_audit_deps <wheel> <log-file> [pip-args...]}"
+    local here work rc=0
+    shift 2
+    here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"  # tuned/, where the vendored common.sh sits
+    command -v python3 >/dev/null || { echo "ERROR: python3 is needed for the dependency audit." >&2; return 1; }
+    work="$(mktemp -d)"
+    {
+        echo "=== dependency audit: runtime dependencies of $(basename "${wheel}") ==="
+        echo "date: $(date -u +%Y-%m-%dT%H:%M:%SZ); pip-audit ${GPU_TUNED_PIP_AUDIT_VERSION}"
+        python3 -m venv "${work}/venv" \
+            && "${work}/venv/bin/python" -m pip install --quiet --disable-pip-version-check "pip-audit==${GPU_TUNED_PIP_AUDIT_VERSION}" \
+            && "${work}/venv/bin/python" -m pip install --quiet --disable-pip-version-check --dry-run --ignore-installed \
+                   --report "${work}/report.json" "$@" "${wheel}" \
+            || { echo "ERROR: could not set up the audit venv or resolve the wheel's dependencies (network?)." >&2; rc=1; }
+        if [[ ${rc} -eq 0 ]]; then
+            "${work}/venv/bin/python" -I - "${work}/report.json" "${wheel}" > "${work}/reqs.txt" <<'PY' || rc=1
+import json, re, sys
+report, wheel = sys.argv[1], sys.argv[2]
+own = re.sub(r"[-_.]+", "-", wheel.rsplit("/", 1)[-1].split("-", 1)[0]).lower()
+others = 0
+for item in json.load(open(report))["install"]:
+    meta = item["metadata"]
+    if re.sub(r"[-_.]+", "-", meta["name"]).lower() == own:
+        continue
+    others += 1
+    if item.get("is_direct"):
+        # A direct-URL dependency (our own tuned torch or flashinfer wheel) has a local version that is not on PyPI.
+        sys.stderr.write(f'not audited (direct URL, not on PyPI): {meta["name"]}=={meta["version"]}\n')
+        continue
+    if (item.get("download_info") or {}).get("url", "").startswith("file:"):
+        # Resolved from a local --find-links directory: one of our own sibling wheels.
+        sys.stderr.write(f'not audited (local wheel, not on PyPI): {meta["name"]}=={meta["version"]}\n')
+        continue
+    sys.stdout.write(f'{meta["name"]}=={meta["version"]}\n')
+if not others:
+    open(report + ".nodeps", "w").close()  # the wheel has no runtime dependencies: nothing to audit is a pass, not a failure
+PY
+        fi
+        if [[ ${rc} -eq 0 && -e "${work}/report.json.nodeps" ]]; then
+            echo "the wheel has no runtime dependencies; nothing to audit."
+            echo "RESULT: no vulnerable package has a fix available"
+        elif [[ ${rc} -eq 0 ]]; then
+            [[ -s "${work}/reqs.txt" ]] || { echo "ERROR: the wheel resolved to no dependencies; the audit has nothing to check." >&2; rc=1; }
+        fi
+        if [[ ${rc} -eq 0 && ! -e "${work}/report.json.nodeps" ]]; then
+            "${work}/venv/bin/pip-audit" --no-deps --disable-pip -r "${work}/reqs.txt" --format json \
+                > "${work}/audit.json" 2> "${work}/audit.err" || true
+            [[ -s "${work}/audit.json" ]] || { sed 's/^/  /' "${work}/audit.err" >&2; echo "ERROR: pip-audit produced no result." >&2; rc=1; }
+        fi
+        if [[ ${rc} -eq 0 && ! -e "${work}/report.json.nodeps" ]]; then
+            python3 -I - "${work}/audit.json" "${GPU_TUNED_AUDIT_ALLOW_FILE:-${here}/audit_allow.txt}" <<'PY' || rc=1
+import json, sys
+audit_path, allow_path = sys.argv[1], sys.argv[2]
+allowed = {}
+try:
+    for line in open(allow_path):
+        line = line.split("#", 1)[0].strip()
+        if line:
+            ident, _, reason = line.partition(" ")
+            if not reason.strip():
+                sys.stdout.write(f"ERROR: {allow_path}: '{ident}' has no reason.\n")
+                sys.exit(1)
+            allowed[ident] = reason.strip()
+except FileNotFoundError:
+    pass
+alldeps = json.load(open(audit_path))["dependencies"]
+deps = [d for d in alldeps if "skip_reason" not in d]
+failed = False
+seen = set()
+for d in alldeps:
+    if "skip_reason" in d:
+        sys.stdout.write(f'not audited ({d["skip_reason"]}): {d["name"]}=={d.get("version", "?")}\n')
+sys.stdout.write(f"audited {len(deps)} packages: " + " ".join(f'{d["name"]}=={d["version"]}' for d in deps) + "\n")
+if not deps:
+    sys.stdout.write("ERROR: every dependency was skipped; the audit has nothing to check.\n")
+    sys.exit(1)
+for dep in deps:
+    for vuln in dep.get("vulns", []):
+        if (dep["name"], dep["version"], vuln["id"]) in seen:
+            continue
+        seen.add((dep["name"], dep["version"], vuln["id"]))
+        ids = {vuln["id"], *vuln.get("aliases", [])}
+        accepted = next((allowed[i] for i in ids if i in allowed), None)
+        fixes = ", ".join(vuln.get("fix_versions", [])) or "none"
+        tag = "ACCEPTED" if accepted else ("VIOLATION" if vuln.get("fix_versions") else "WARNING")
+        sys.stdout.write(f'{tag}: {dep["name"]}=={dep["version"]} {vuln["id"]} fixed in: {fixes}'
+                         + (f" ({accepted})" if accepted else "") + "\n")
+        failed = failed or tag == "VIOLATION"
+sys.stdout.write("RESULT: " + ("FAILED" if failed else "no vulnerable package has a fix available") + "\n")
+sys.exit(1 if failed else 0)
+PY
+        fi
+    } 2>&1 | tee "${log}"
+    # The block above runs in the pipeline's subshell, so its rc is lost; the RESULT line is the verdict.
+    grep -q '^RESULT: no vulnerable package has a fix available$' "${log}" || rc=1
+    rm -rf "${work}"
+    return "${rc}"
+}
+
+# gpu_tuned_install_setuptools -- put the current setuptools release in the active build venv, last (C8). setuptools is a
+# critical build component and upstream's requirement files cap it (vllm: <81, torch: <82), so a later `pip install -r`
+# can pull it back down; call this after the last other pip install in build.sh. It upgrades to the newest release and
+# fails if the result is older than GPU_TUNED_SETUPTOOLS_MIN (84.2, the user's floor of 2026-10-26; it is above the
+# releases that fixed the advisories the dependency audit found: GHSA-xmj3-9gf7-h52w in 84.1.0, PYSEC-2026-3447 in 83.0.0).
+# Prints the version so the build log records it.
+GPU_TUNED_SETUPTOOLS_MIN="${GPU_TUNED_SETUPTOOLS_MIN:-84.2}"
+
+gpu_tuned_install_setuptools() {
+    local have
+    python3 -m pip install --quiet --disable-pip-version-check --upgrade "setuptools>=${GPU_TUNED_SETUPTOOLS_MIN}" \
+        || { echo "ERROR: could not install setuptools>=${GPU_TUNED_SETUPTOOLS_MIN} (network? an index without it?)." >&2; return 1; }
+    have="$(python3 -c 'import setuptools; print(setuptools.__version__)')" || return 1
+    printf '%s\n%s\n' "${GPU_TUNED_SETUPTOOLS_MIN}" "${have}" | sort -V -C \
+        || { echo "ERROR: setuptools ${have} is older than the minimum ${GPU_TUNED_SETUPTOOLS_MIN}." >&2; return 1; }
+    echo "setuptools ${have} (current release; minimum ${GPU_TUNED_SETUPTOOLS_MIN})"
+    gpu_tuned_check_venv_resolution
+}
+
+# gpu_tuned_check_venv_resolution -- with a build venv active ($VIRTUAL_ENV set), every tool the venv provides
+# (python3, pip, and cmake, ninja, swig when installed in it) must be the one the shell resolves, i.e. the venv's bin comes
+# first. A host or another project's venv ahead of it (an inherited PATH, a stale hash) would build with the wrong cmake or
+# python while the log looks right. Names each offender and fails (rc 1); with no venv active it does nothing (H11).
+gpu_tuned_check_venv_resolution() {
+    local venv="${VIRTUAL_ENV:-}" tool want got bad=0
+    [[ -n "${venv}" ]] || return 0
+    hash -r 2>/dev/null || true
+    for tool in python3 pip cmake ninja swig; do
+        want="${venv}/bin/${tool}"
+        [[ -e "${want}" ]] || continue
+        got="$(command -v "${tool}" || true)"
+        if [[ "${got}" != "${want}" ]]; then
+            echo "ERROR: ${tool} resolves to ${got:-nothing}, not the build venv's ${want}." >&2
+            bad=1
+        fi
+    done
+    [[ "${bad}" -eq 0 ]] || { echo "  The build venv's bin must come first on PATH (is another venv or a host tool ahead of it?)." >&2; return 1; }
+    echo "build venv tools resolve to ${venv}/bin"
+}
+
+# gpu_tuned_freeze_requirements <requirements-file> -- write <requirements-file minus .txt>.lock from the ACTIVE build venv:
+# every installed package as name==version (pip and setuptools left out: pip is the venv's bootstrap and setuptools is set by
+# gpu_tuned_install_setuptools to the current release, C8). The lock is what a build that passed was run with; commit it, and
+# builds install under it (gpu_tuned_pip_install_requirements), so a dependency does not move between releases unnoticed. It
+# is specific to the interpreter and platform that made it, and the header says which (H12).
+gpu_tuned_freeze_requirements() {
+    local req="${1:?usage: gpu_tuned_freeze_requirements <requirements-file>}" lock
+    lock="${req%.txt}.lock"
+    [[ -n "${VIRTUAL_ENV:-}" ]] || { echo "ERROR: gpu_tuned_freeze_requirements: no build venv is active." >&2; return 1; }
+    {
+        echo "# Locked by gpu_tuned_freeze_requirements from the build venv that passed, for ${req##*/}."
+        echo "# $(python3 -c 'import sys; print("Python", sys.version.split()[0])'), $(uname -m)."
+        echo "# Regenerate: build once with GPU_TUNED_UNLOCKED=1, run gpu_tuned_freeze_requirements, review the diff."
+        python3 -m pip freeze --disable-pip-version-check 2>/dev/null | grep -E '^[A-Za-z0-9_.-]+==' \
+            | grep -viE '^(pip|setuptools)==' | sort -f
+    } > "${lock}" || return 1
+    echo "locked $(grep -c '==' "${lock}") packages in ${lock}"
+}
+
+# gpu_tuned_pip_install_requirements <requirements-file> [pip-args...] -- `pip install -r` the file under its lock
+# (<file minus .txt>.lock, as a constraints file) when there is one, so the versions are the locked ones. No lock, or
+# GPU_TUNED_UNLOCKED=1 (to regenerate it), installs unconstrained and says so (H12).
+gpu_tuned_pip_install_requirements() {
+    local req="${1:?usage: gpu_tuned_pip_install_requirements <requirements-file> [pip-args...]}" lock
+    shift
+    lock="${req%.txt}.lock"
+    if [[ -f "${lock}" && "${GPU_TUNED_UNLOCKED:-}" != "1" ]]; then
+        echo "installing ${req##*/} under ${lock##*/}"
+        python3 -m pip install -r "${req}" -c "${lock}" "$@"
+    else
+        echo "installing ${req##*/} UNLOCKED (no ${lock##*/}, or GPU_TUNED_UNLOCKED=1)"
+        python3 -m pip install -r "${req}" "$@"
+    fi
+}
+
+# gpu_tuned_setup_build_venv <venv-dir> <repo-root> -- the one way a build.sh gets its Python build venv (C9). It honours
+# GPU_TUNED_CLEAN_VENV=1 (remove first), creates the venv or, if it exists, refuses one copied from another checkout
+# (gpu_tuned_verify_venv), activates it in the calling shell, upgrades pip, and puts the current setuptools in
+# (gpu_tuned_install_setuptools), so setuptools is never missing or old for anything the build installs afterwards. A
+# build still ends its own pip section with gpu_tuned_install_setuptools (C8): a later `pip install -r` can pull it back down.
+gpu_tuned_setup_build_venv() {
+    local venv_dir="${1:?usage: gpu_tuned_setup_build_venv <venv-dir> <repo-root>}" repo_root="${2:?usage: gpu_tuned_setup_build_venv <venv-dir> <repo-root>}"
+    command -v python3 &>/dev/null || { echo "ERROR: python3 not found on PATH." >&2; return 1; }
+    if [[ "${GPU_TUNED_CLEAN_VENV:-}" == "1" && -d "${venv_dir}" ]]; then
+        echo "GPU_TUNED_CLEAN_VENV=1: removing ${venv_dir} for a clean rebuild"
+        rm -rf "${venv_dir}"
+    fi
+    if [[ -d "${venv_dir}" ]]; then
+        # Reusing the venv is the default: the install is slow. Verify it was not copied from another checkout.
+        gpu_tuned_verify_venv "${venv_dir}" "${repo_root}" || return 1
+    else
+        python3 -m venv "${venv_dir}" || return 1
+    fi
+    # shellcheck source=/dev/null
+    source "${venv_dir}/bin/activate" || return 1
+    python3 -m pip install --quiet --disable-pip-version-check --upgrade pip || { echo "ERROR: could not upgrade pip in ${venv_dir}." >&2; return 1; }
+    gpu_tuned_install_setuptools
+}
+
+# gpu_tuned_check_venv_setuptools <venv-dir> -- the package-time gate (H10): the build venv's setuptools is at least
+# GPU_TUNED_SETUPTOOLS_MIN. Reads the venv's own python, not PATH. A reused venv that predates the minimum, or one that
+# was never set up by gpu_tuned_setup_build_venv, fails here instead of shipping a wheel built on it.
+gpu_tuned_check_venv_setuptools() {
+    local venv_dir="${1:?usage: gpu_tuned_check_venv_setuptools <venv-dir>}" have
+    [[ -x "${venv_dir}/bin/python" ]] || { echo "ERROR: no build venv python at ${venv_dir}/bin/python; the setuptools minimum cannot be checked." >&2; return 1; }
+    have="$("${venv_dir}/bin/python" -c 'import setuptools; print(setuptools.__version__)' 2>/dev/null)" \
+        || { echo "ERROR: the build venv ${venv_dir} has no importable setuptools." >&2; return 1; }
+    printf '%s\n%s\n' "${GPU_TUNED_SETUPTOOLS_MIN}" "${have}" | sort -V -C \
+        || { echo "ERROR: the build venv ${venv_dir} has setuptools ${have}, older than the minimum ${GPU_TUNED_SETUPTOOLS_MIN} (rebuild with GPU_TUNED_CLEAN_VENV=1 or run build.sh again)." >&2; return 1; }
+    echo "build venv setuptools ${have} (minimum ${GPU_TUNED_SETUPTOOLS_MIN})"
 }
 
 if [[ -z "${GPU_TUNED_NO_ERR_TRAP:-}" && -z "$(trap -p ERR)" ]]; then
