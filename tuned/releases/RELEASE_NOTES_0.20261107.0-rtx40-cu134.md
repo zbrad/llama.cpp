@@ -12,4 +12,4 @@ Tested: the ctest suite passed on this build (log attached), and the tarball was
 - **GPU code:** cubin for sm_89 (221 modules) plus PTX. Runs only on that GPU; the driver loads the cubin directly, so nothing is JIT-compiled at load.
 - **Host libraries required:** `libcublas.so.13`, `libcudart.so.13` from any CUDA 13.x install. `libcuda.so.1` comes with the NVIDIA driver.
 - **Tested on (driver):**
-  - 621.14 (Windows host driver, through WSL2 Ubuntu 24.04), RTX 4090, tested with this release: the ctest suite and the smoke test (install.sh from the tarball, a completion served from a ~1 MB test model). No full-size model has been run on it yet.
+  - 621.14 (Windows host driver, through WSL2 Ubuntu 24.04), RTX 4090, tested with this release: the ctest suite and the smoke test (install.sh from the tarball, a completion served from a ~1 MB test model). Full-size model, same driver, after release: Qwen3-30B-A3B Q4_K_M (18.6 GB GGUF) fully on GPU (-ngl 99, 16k context), chat completions served at ~233 tok/s generation.
