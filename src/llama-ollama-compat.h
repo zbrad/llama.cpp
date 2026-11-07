@@ -26,6 +26,7 @@
 #include <string>
 
 #include "ggml-backend.h" // for ggml_backend_buffer_type_t
+#include "llama.h"        // for LLAMA_API
 
 struct gguf_context;
 struct ggml_context;
@@ -59,17 +60,17 @@ bool should_skip_tensor(const llama_model_loader * ml, const char * tensor_name)
 // Called from clip_model_loader's constructor. Rewrites the clip-facing
 // view of the metadata (arch=clip, clip.vision.* KVs, renamed tensors)
 // so the rest of clip.cpp can load a monolithic GGUF unchanged.
-void translate_clip_metadata(gguf_context * meta, ggml_context * ctx);
+LLAMA_API void translate_clip_metadata(gguf_context * meta, ggml_context * ctx);
 
 // Called from clip.cpp's tensor-loading loop, before the normal file read.
 // If this tensor was marked for type promotion by translate_clip_metadata
 // (e.g. F16->F32), performs the conversion and writes the result into
 // `cur` (host memcpy or backend_tensor_set based on `buft`). Returns true
 // when the tensor was handled — caller should skip its normal read path.
-bool maybe_load_tensor(ggml_tensor * cur,
-                       const char * source_file,
-                       size_t file_offset,
-                       ggml_backend_buffer_type_t buft);
+LLAMA_API bool maybe_load_tensor(ggml_tensor * cur,
+                                 const char * source_file,
+                                 size_t file_offset,
+                                 ggml_backend_buffer_type_t buft);
 
 // Text-side counterpart to maybe_load_tensor. Self-contained: looks up
 // the model file path from the per-loader registry populated by
