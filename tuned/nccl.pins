@@ -5,3 +5,5 @@
 # (TOOLKIT_NCCL_VERSION); a toolkit that declares "none" and has no line here cannot be built (tuned/env.sh).
 # Move a pin deliberately, in its own commit: the NCCL in the package follows this line.
 gb10 cu134 v0.20261018.0-gb10-cu134
+rtx40 cu134 v0.20261107.0-rtx40-cu134
+rtx50 cu134 v0.20261107.0-rtx50-cu134
