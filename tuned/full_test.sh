@@ -12,6 +12,15 @@
 # Hugging Face, so they need network access (and HF_TOKEN may be needed for rate limits).
 export PATH="${CONDA_PREFIX:+$CONDA_PREFIX/bin:}$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
+# Shells no longer export HF_TOKEN. When it is unset, load it from
+# ~/.secrets/env/huggingface.env with dotfiles' parse-only helper (bashrc.d/lib/secrets.sh),
+# so the model downloads are authenticated; without that file they run anonymously.
+if [ -z "${HF_TOKEN:-}" ] && [ -r "$HOME/.secrets/env/huggingface.env" ] \
+    && [ -r "${DOTFILES_DIR:-}/bashrc.d/lib/secrets.sh" ]; then
+    # shellcheck source=/dev/null
+    source "${DOTFILES_DIR}/bashrc.d/lib/secrets.sh" && secret_use huggingface
+fi
+
 GPU_TUNED_ARG_VARIANT="${1:?usage: tuned/full_test.sh <variant>}"
 REPODIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${REPODIR}" || exit 1
