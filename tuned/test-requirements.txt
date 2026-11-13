@@ -1,0 +1,6 @@
+# Python dependencies of llama.cpp's ctest "python" tests (test-conversion-fp8 and test-kv-cache-scales, added
+# upstream in v1.0.0, import the converter: torch, numpy, safetensors, transformers). This is upstream's converter
+# requirement set, as those tests' own docstrings say to install it. tuned/full_test.sh installs it into the
+# per-toolkit test venv, then the checkout's gguf-py as an editable install (also per the docstrings), so the
+# tests run against this tree's gguf, not the PyPI one.
+-r ../requirements/requirements-convert_hf_to_gguf.txt

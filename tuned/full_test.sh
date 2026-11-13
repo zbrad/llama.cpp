@@ -39,6 +39,17 @@ mkdir -p "${LLAMA_TUNED_RELEASES_DIR}"
 export LD_LIBRARY_PATH="${GPU_TUNED_TOOLKIT_LIB_DIR}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 gpu_tuned_verify_toolkit_libs "${BUILD_DIR}/bin/llama-server" || { echo "ERROR: llama-server does not resolve the ${CUDA_TAG} runtime libraries." >&2; exit 1; }
 
+# The ctest "python" tests import llama.cpp's converter (torch, numpy, ...), which the host python3 does not have. Give
+# them a per-toolkit venv with tuned/test-requirements.txt and this checkout's gguf-py (editable), and put it first on
+# PATH so ctest's python3 is the venv's.
+TEST_VENV="${LLAMA_TUNED_BUILD_ROOT}/test-venv"
+gpu_tuned_setup_build_venv "${TEST_VENV}" "${REPODIR}" || { echo "ERROR: could not set up the test venv ${TEST_VENV}." >&2; exit 1; }
+gpu_tuned_pip_install_requirements "${REPODIR}/tuned/test-requirements.txt" --quiet --disable-pip-version-check \
+    || { echo "ERROR: could not install tuned/test-requirements.txt into ${TEST_VENV}." >&2; exit 1; }
+python3 -m pip install --quiet --disable-pip-version-check --no-deps -e "${REPODIR}/gguf-py" \
+    || { echo "ERROR: could not install gguf-py into ${TEST_VENV}." >&2; exit 1; }
+gpu_tuned_check_venv_resolution || exit 1
+
 {
     echo "llama.cpp full test suite -- variant=${GPU_TUNED_VARIANT} cuda=${CUDA_VER} (${CUDA_TAG})"
     echo "started: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -47,6 +58,7 @@ gpu_tuned_verify_toolkit_libs "${BUILD_DIR}/bin/llama-server" || { echo "ERROR: 
     echo "build:   ${BUILD_DIR}"
     echo "gates: toolkit libs resolve under ${CUDA_HOME}"
     echo "tests:   ctest, all labels (main, model, python)"
+    echo "python:  $(python3 --version 2>&1) in ${TEST_VENV}; torch $(python3 -c 'import torch; print(torch.__version__)' 2>/dev/null || echo missing)"
     echo ""
 } > "${RESULTS_FILE}"
 
