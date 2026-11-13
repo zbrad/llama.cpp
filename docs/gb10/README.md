@@ -54,7 +54,7 @@ download, depending on the case.
 ### The Problem
 
 Loading `nemotron-3-super` from an Ollama-format blob, with the shim
-disabled (`OLLAMA_COMPAT_DISABLE=1`):
+disabled (`OLLAMA_LLAMA_CPP_COMPAT=0`):
 
 ```
 error: tensor 'blk.1.ffn_down_exps.weight' has wrong shape
@@ -86,7 +86,7 @@ The shim is wired into three call sites in `llama-model-loader.cpp`:
 - `should_skip_tensor()` — in the tensor index loop
 - `maybe_load_text_tensor()` — in the load path
 
-Disable with `OLLAMA_COMPAT_DISABLE=1` if needed (this also disables the
+Disable with `OLLAMA_LLAMA_CPP_COMPAT=0` if needed (this also disables the
 `mtp.*` skip).
 
 For full details, see [ollama-compat.md](ollama-compat.md).

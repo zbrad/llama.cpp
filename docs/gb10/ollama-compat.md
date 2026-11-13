@@ -15,7 +15,7 @@ including `nemotron-3-super` — were originally converted with Ollama-specific
 tensor naming conventions that do not match what the upstream architecture
 code expects.
 
-With the compat shim disabled (`OLLAMA_COMPAT_DISABLE=1`), loading the blob
+With the compat shim disabled (`OLLAMA_LLAMA_CPP_COMPAT=0`), loading the blob
 directly produces a tensor shape mismatch deep in model loading:
 
 ```
@@ -57,7 +57,7 @@ GGUF.
 | `ffn_latent_in`/`out` tensors present | **Refuses to load**, with an error naming the Unsloth GGUF as the fix. There is no in-place translation for this case anymore (see history below). |
 | Only `mtp.*` tensors present | Skips them silently and loads normally -- these are Multi-Token-Prediction tensors llama.cpp doesn't use, not a sign of a broken conversion. |
 
-The shim is disabled by setting `OLLAMA_COMPAT_DISABLE=1` (this also
+The shim is disabled by setting `OLLAMA_LLAMA_CPP_COMPAT=0` (this also
 disables the `mtp.*` skip, so a file that needs it will fail to load with a
 duplicate/unclaimed-tensor error instead).
 
