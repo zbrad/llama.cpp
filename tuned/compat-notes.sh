@@ -32,11 +32,19 @@ esac
 # above <major>.0 means this build may use one, which needs a human to
 # word the notes, so stop instead of printing "none".
 base=$(( CUDA_MAJOR * 1000 ))
+# Guards a maintainer has reviewed and found need no newer driver, "<op><version>" plus why. Only a guard whose
+# code is compiled into the cubin (header-only device code, PTX ptxas lowers to SASS) qualifies: the driver loads
+# that cubin like any other. A guard around a runtime or driver API call never does.
+#   >=13040  convert.cuh (upstream #28413, OCP FP8): __nv_cvt_fp8_to_bf16raw / __nv_cvt_fp8x2_to_bf162raw, inline
+#            __host__ __device__ functions in CUDA 13.4's cuda_fp8.hpp that emit cvt.rn.bf16x2.e4m3x2. Reviewed
+#            2026-11-13.
+REVIEWED_GUARDS=(">=13040")
 newer="$(grep -rhoE 'CUDART_VERSION *>=? *[0-9]{5}' "${REPODIR}/ggml/src/ggml-cuda" \
     | sed -E 's/CUDART_VERSION *//' \
     | awk -v base="${base}" '{ op = ($0 ~ /^>=/) ? ">=" : ">"; n = $0; gsub(/[^0-9]/, "", n);
                               if ((op == ">=" && n > base) || (op == ">" && n >= base)) print op n }' \
-    | sort -u)"
+    | sort -u \
+    | grep -vxF -f <(printf '%s\n' "${REVIEWED_GUARDS[@]}") || true)"
 if [[ -n "${newer}" ]]; then
     echo "ERROR: ggml-cuda has CUDART_VERSION guards above CUDA ${CUDA_MAJOR}.0 ($(echo "${newer}" | tr '\n' ' '))." >&2
     echo "       Work out which driver branch they need and update tuned/compat-notes.sh." >&2
@@ -79,7 +87,7 @@ cat <<EOF
 
 - **Built with:** CUDA ${CUDA_VER}.
 - **Minimum driver:** R${MIN_DRIVER} (>= ${MIN_DRIVER}). CUDA ${CUDA_MAJOR}.x applications run on any driver from that branch on; see "CUDA minor version compatibility" in NVIDIA's [CUDA toolkit release notes](${COMPAT_URL}).
-- Features introduced after CUDA ${CUDA_MAJOR}.0 need newer driver branches. Ones this build uses: none.
+- Features introduced after CUDA ${CUDA_MAJOR}.0 need newer driver branches. Ones this build uses: none. CUDA 13.4 FP8-to-BF16 conversions (\`CUDART_VERSION >= 13040\`) are compiled into the cubin and need no newer driver.
 - **GPU code:** cubin for sm_${GPU_TUNED_CUDA_ARCH} (${cubin_count} modules)${ptx_note}. Runs only on that GPU; the driver loads the cubin directly, so nothing is JIT-compiled at load.
 - **Host libraries required:** ${host_libs_text}. \`libcuda.so.1\` comes with the NVIDIA driver.
 - **Tested on (driver):**

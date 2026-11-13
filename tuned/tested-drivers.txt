@@ -9,3 +9,4 @@ gb10         610.57.04    v10931-gb10-cu133    same environment and result; this
 gb10         615.71.09    v10931-gb10-cu133    same environment and result
 rtx40        621.14       v0.20261107.0-rtx40-cu134  Windows host driver through WSL2 Ubuntu 24.04, RTX 4090; ctest suite and smoke test (completion from a ~1 MB test model); Qwen3-30B-A3B Q4_K_M (18.6 GB GGUF) fully on GPU (-ngl 99, 16k ctx), completions served at ~233 tok/s
 rtx50        621.14       v0.20261107.0-rtx50-cu134  Windows host driver through WSL2 Ubuntu 24.04, RTX 5090 Laptop GPU; ctest suite and smoke test (completion from a ~1 MB test model); Qwen3-30B-A3B Q4_K_M (18.6 GB GGUF) fully on GPU (-ngl 99, 16k ctx), completions served at ~193 tok/s
+gb10         620.70.06    v0.20261113.0-gb10-cu134  DGX OS 7.6.0, kernel 7.0.0-1025-nvidia (open kernel module); full ctest suite 72/72 passed (llama.cpp v1.0.0 merge, 2026-11-13)
