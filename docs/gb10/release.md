@@ -11,8 +11,9 @@ publishes**: it runs every gate and, if all pass, writes a ready-marker. `publis
 
 ## What a release is
 
-One thing, with one identity: the binary release `v0.<YYYYMMDD>.<seq>-<variant>-<cuda>`
-(e.g. `v0.20261016.0-gb10-cu133`). `install.sh` picks it by variant and CUDA version and fetches
+One thing, with one identity: the binary release `v<upstream-version>-<YYYYMMDD>.<seq>-<variant>-<cuda>`
+(e.g. `v1.0.0-20261114.0-gb10-cu134`; the version is upstream's release the source is based on, from
+`CMakeLists.txt`). Releases before 2026-11-14 used `v0.<YYYYMMDD>.<seq>-<variant>-<cuda>` and keep that name. `install.sh` picks it by variant and CUDA version and fetches
 `llmsrv.sh`, `models/aliases.json` and the chat templates from that same tag, which `gh` creates on
 the `tuned-builds` head at release time, so they are exactly the files the release was made from.
 zbrad/ollama's fetch script consumes the tarball. There is no separate source tag and no pin to bump.
@@ -85,7 +86,7 @@ It holds `release` (the identity, first), `component`, `variant`, `hardware`, `a
    label bytes and the derived build id may differ (`tuned/elf_section_diff.py`). If so it writes
    `<build>/relabel.json` and `release.sh` accepts it in place of a test log newer than the build; the notes say
    the release was relabelled. If anything else differs it refuses, and you run `full_test.sh`.
-3. **Review and commit the release notes**, `tuned/releases/RELEASE_NOTES_0.<date>.<seq>_<variant>_<cuda>.md`:
+3. **Review and commit the release notes**, `tuned/releases/RELEASE_NOTES_<version>-<date>.<seq>-<variant>-<cuda>.md`:
    check the text (the "Tested on" section comes from `tuned/tested-drivers.txt` and names older releases),
    delete the DRAFT line, commit and push. This must be a notes-only commit: any other change after packaging
    means building, testing and packaging again (the gate refuses it, and the binaries carry the build number

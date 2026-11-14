@@ -1,10 +1,10 @@
 #!/bin/bash
 # tuned/package.sh <variant> — package the build tuned/build.sh made (and tuned/full_test.sh
-# tested) for ONE variant and ONE CUDA toolkit into tuned/build/<cuda-tag>/dist/llama-cpp-0.<date>.<seq>-<variant>-<cuda>.tar.gz
+# tested) for ONE variant and ONE CUDA toolkit into tuned/build/<cuda-tag>/dist/llama-cpp-<upstream-version>-<date>.<seq>-<variant>-<cuda>.tar.gz
 # with a .sha256 sidecar and package-info.txt, then check the tarball as a consumer gets it
 # (extract, version, ldd, RUNPATH, toolkit libs). It packages only: no tag, no publishing.
 # tuned/release.sh gates and tuned/publish.sh publishes exactly these files, with the tracked release notes
-# (tuned/releases/RELEASE_NOTES_0.<date>.<seq>_<variant>_<cuda>.md; a draft is written here if there is none).
+# (tuned/releases/RELEASE_NOTES_<upstream-version>-<date>.<seq>-<variant>-<cuda>.md; a draft is written here if there is none).
 # Same split as raft, cuvs and faiss.
 #
 #   CUDA_TAG=cu133 bash tuned/build.sh gb10 && CUDA_TAG=cu133 bash tuned/full_test.sh gb10
@@ -99,13 +99,13 @@ gpu_tuned_verify_cuda_compat "${CUDA_SO}" "${CUDA_VER}"
 # tools/ui sources as this checkout; never upstream's lockfile built or downloaded by CMake.
 UI_BUILD="$(bash "${REPODIR}/tuned/check-ui.sh" "${BUILD_DIR}")" || exit 1
 
-# Release identity: the native tag v0.<date>.<seq>-<variant>-<cuda> that tuned/build.sh allocated and compiled into
+# Release identity: the native tag v<upstream-version>-<date>.<seq>-<variant>-<cuda> that tuned/build.sh allocated and compiled into
 # the binary (`llama-server --version` prints it), read from the build tree and checked: it must be a valid
 # date-label tag for this variant and toolkit, and the packaged binary must print it. Not recomputed here.
 [[ -f "${BUILD_DIR}/release-label" ]] || { echo "ERROR: ${BUILD_DIR}/release-label not found; run tuned/build.sh ${GPU_TUNED_VARIANT} for ${CUDA_TAG}." >&2; exit 1; }
 RELEASE_TAG="$(head -1 "${BUILD_DIR}/release-label")"
 gpu_tuned_check_release_tag "${RELEASE_TAG}" || exit 1
-[[ "${RELEASE_TAG}" == v0.*-"${GPU_TUNED_VARIANT}-${CUDA_TAG}" ]] || { echo "ERROR: the build's release ${RELEASE_TAG} is not for ${GPU_TUNED_VARIANT}-${CUDA_TAG}." >&2; exit 1; }
+[[ "${RELEASE_TAG}" =~ ^v[0-9.]+[-.][0-9]{8}\.[0-9]+-${GPU_TUNED_VARIANT}-${CUDA_TAG}$ ]] || { echo "ERROR: the build's release ${RELEASE_TAG} is not for ${GPU_TUNED_VARIANT}-${CUDA_TAG}." >&2; exit 1; }
 echo "  Release   : ${RELEASE_TAG}"
 DIST_DIR="${LLAMA_TUNED_DIST_DIR}"
 rm -rf "${DIST_DIR}"

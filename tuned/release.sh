@@ -12,7 +12,7 @@
 # it, only release notes changed since the package's commit, notes committed and not a DRAFT.
 #
 # One identity per release: the date label package.sh allocated (UTC date of HEAD's commit plus a sequence
-# for that date), as the native tag v0.<date>.<seq>-<variant>-<cuda>, recorded in package-info.txt, so a
+# for that date), as the native tag v<upstream-version>-<date>.<seq>-<variant>-<cuda>, recorded in package-info.txt, so a
 # notes-only commit after packaging does not change it. gh creates that tag on the tuned-builds head (at
 # publish), and install.sh fetches llmsrv.sh and models/aliases.json from it: there is no separate source tag
 # and no pin to bump. The build number is only what llama-server --version reports. The CUDA toolkit is chosen as in
@@ -99,7 +99,7 @@ fi
 if [[ -z "${BIN_TAG}" ]]; then
     fail "no package-info.txt, so no release tag; run tuned/package.sh ${VARIANT}"
 elif ! gpu_tuned_check_release_tag "${BIN_TAG}" 2>/dev/null; then
-    fail "release tag ${BIN_TAG} carries no date label (v0.<YYYYMMDD>.<seq>-<variant>-<cuda>)"
+    fail "release tag ${BIN_TAG} carries no date label (v<upstream-version>-<YYYYMMDD>.<seq>-<variant>-<cuda>)"
 elif gh release view "${BIN_TAG}" --repo "${REPO}" >/dev/null 2>&1; then
     fail "binary release ${BIN_TAG} already exists"
 else

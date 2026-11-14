@@ -39,8 +39,9 @@ only release notes changed since the package's commit; notes not a DRAFT.
 ## Identity
 
 One identity per release: the date label `package.sh` allocates (UTC date of HEAD's commit plus a sequence for that
-date, always written), as the tag `v0.<YYYYMMDD>.<seq>-<variant>-<cuda>`, e.g. `v0.20261019.0-gb10-cu134`. The tarball
-is `llama-cpp-0.<YYYYMMDD>.<seq>-<variant>-<cuda>.tar.gz`. `gh` creates the tag on the `tuned-builds` head, and
+date, always written), as the tag `v<upstream-version>-<YYYYMMDD>.<seq>-<variant>-<cuda>`, e.g. `v1.0.0-20261114.0-gb10-cu134`, where the
+version comes from `CMakeLists.txt` (`LLAMA_VERSION_*`; releases before 2026-11-14 used `v0.<YYYYMMDD>.<seq>-...`). The tarball
+is `llama-cpp-<upstream-version>-<YYYYMMDD>.<seq>-<variant>-<cuda>.tar.gz`. `gh` creates the tag on the `tuned-builds` head, and
 `install.sh` fetches `llmsrv.sh` and `models/aliases.json` from it, so there is no separate source tag and no pin to
 bump. The build number `llama-server --version` also prints is not the release identity.
 

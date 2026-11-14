@@ -62,6 +62,14 @@ run() {
     ver="$(LD_LIBRARY_PATH="${INSTALL_DIR}" "${INSTALL_DIR}/llama-server-tuned" --version 2>&1 | grep -m1 '^version:' || true)"
     rel="$(LD_LIBRARY_PATH="${INSTALL_DIR}" "${INSTALL_DIR}/llama-server-tuned" --version 2>&1 | grep -m1 '^release:' || true)"
     [[ "${rel}" == "release: ${RELEASE_TAG}" ]] && ok "installed llama-server-tuned prints ${rel}" || fail "installed llama-server-tuned prints '${rel}', expected 'release: ${RELEASE_TAG}'"
+    tag_ver="$(gpu_tuned_native_tag_version "${RELEASE_TAG}")"
+    if [[ "${tag_ver}" == 0 ]]; then
+        ok "release tag ${RELEASE_TAG} is the older unversioned form; no upstream version to compare"
+    elif [[ "${ver}" =~ ^version:\ ${tag_ver//./\\.}(-dev)?\ \(build ]]; then
+        ok "the tag's upstream version ${tag_ver} is the one the binary reports (${ver})"
+    else
+        fail "the tag names upstream version '${tag_ver}' but the binary reports '${ver}'"
+    fi
     if [[ "${ver}" == *", commit ${BUILD_COMMIT})"* ]]; then
         ok "installed llama-server-tuned reports ${ver#version: }"
     else

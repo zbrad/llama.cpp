@@ -46,7 +46,7 @@ gpu_tuned_assert_platform "${GPU_TUNED_PLATFORM}" "${GPU_TUNED_VARIANT}" || retu
 
 # --- Build commit: same derivation as cmake/build-info.cmake, so it matches what `llama-server --version`
 #     reports; tuned/package.sh checks that. It is NOT the identity of a release: that is the UTC date
-#     label (v0.<date>.<seq>-<variant>-<cuda>) package.sh allocates. ---
+#     label (v<upstream-version>-<date>.<seq>-<variant>-<cuda>) build.sh allocates. ---
 REPODIR="$(cd "${GPU_TUNED_SELF_DIR}/.." && pwd)"
 # Respect a pre-set override (e.g. when re-packaging an already-built binary
 # after a tooling-only commit that didn't require a rebuild -- the git-HEAD
@@ -121,6 +121,20 @@ export GPU_TUNED_UPSTREAM_REF
 # The release tag is the identity. upstream.declared_version is what the built llama-server reports as its
 # version ("0.5.0-dev"), fork.commit_count the repo-relative count llama.cpp's own --version calls "build".
 # Git fields (fork, upstream) are added automatically from the checkout the packager runs in.
+# llama_tuned_upstream_version -- the upstream release this source is based on, from CMakeLists.txt's
+# LLAMA_VERSION_MAJOR/MINOR/PATCH (e.g. 1.0.0; the build adds -dev). It leads the release tag
+# (gpu_tuned_native_tag's fourth argument, tuned-common docs/VERSIONING.md, user decision 2026-11-13).
+llama_tuned_upstream_version() {
+    local f="${REPODIR}/CMakeLists.txt" part v=""
+    for part in MAJOR MINOR PATCH; do
+        local n
+        n="$(sed -n "s/^set(LLAMA_VERSION_${part} \([0-9][0-9]*\))$/\1/p" "${f}" | head -1)"
+        [[ -n "${n}" ]] || { echo "ERROR: llama_tuned_upstream_version: no LLAMA_VERSION_${part} in ${f}." >&2; return 1; }
+        v="${v:+${v}.}${n}"
+    done
+    printf '%s\n' "${v}"
+}
+
 embed_build_info() {
     local target="$1" component="$2" release="$3" ui_name="$4" ui_sha="$5" declared nvcc_full
     declared="$(LD_LIBRARY_PATH="${LLAMA_TUNED_BUILD_DIR}/bin" "${LLAMA_TUNED_BUILD_DIR}/bin/llama-server" --version 2>&1 | sed -n 's/^version: \([^ ]*\) (build.*/\1/p' | head -1)"

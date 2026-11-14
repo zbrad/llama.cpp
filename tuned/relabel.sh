@@ -46,7 +46,7 @@ TESTED_COMMIT="$(sed -n 's/^commit: *\([0-9a-f]*\).*/\1/p' "${TEST_LOG}" | head 
 
 # the next free label must differ from the one the build carries
 NEW_LABEL="$(gpu_tuned_allocate_date_label "${REPODIR}")" || exit 1
-NEW_TAG="$(gpu_tuned_native_tag "${GPU_TUNED_VARIANT}" "${CUDA_TAG}" "${NEW_LABEL}")" || exit 1
+NEW_TAG="$(gpu_tuned_native_tag "${GPU_TUNED_VARIANT}" "${CUDA_TAG}" "${NEW_LABEL}" "$(llama_tuned_upstream_version)")" || exit 1
 [[ "${NEW_TAG}" != "${OLD_TAG}" ]] || die "${OLD_TAG} is still free; nothing to relabel."
 echo "Relabel ${OLD_TAG} -> ${NEW_TAG} (tested at ${TESTED_COMMIT})"
 

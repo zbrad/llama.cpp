@@ -46,7 +46,8 @@ fi
 # yet taken by a published tag; nothing reserves it until publish, so two builds on one date can carry the same
 # label (the stamp's full commit tells them apart). GPU_TUNED_LABEL_SEQ=<n> chooses the sequence offline.
 LABEL="$(gpu_tuned_allocate_date_label "${REPODIR}")" || exit 1
-RELEASE_TAG="$(gpu_tuned_native_tag "${GPU_TUNED_VARIANT}" "${CUDA_TAG}" "${LABEL}")" || exit 1
+UPSTREAM_VERSION="$(llama_tuned_upstream_version)" || exit 1
+RELEASE_TAG="$(gpu_tuned_native_tag "${GPU_TUNED_VARIANT}" "${CUDA_TAG}" "${LABEL}" "${UPSTREAM_VERSION}")" || exit 1
 mkdir -p "${BUILD_DIR}"
 printf '%s\n' "${RELEASE_TAG}" > "${BUILD_DIR}/release-label"
 
