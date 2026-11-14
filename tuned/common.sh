@@ -1278,7 +1278,8 @@ gpu_tuned_check_wheel_label() {
 }
 
 # gpu_tuned_check_release_tag <tag> -- refuses (returns 1) unless the release tag carries the
-# date label (docs/ARCHITECTURE.md E2/E3): a native tag v0.<YYYYMMDD>.<seq>-<variant>-cu<cuda>, or a
+# date label (docs/ARCHITECTURE.md E2/E3): a native tag v<upstream-version>-<YYYYMMDD>.<seq>-<variant>-cu<cuda>
+# (or the older v0.<YYYYMMDD>.<seq>-<variant>-cu<cuda>), or a
 # wheel tag whose version ends .cu<cuda>.<YYYYMMDD>[.<seq>]. It is gpu_tuned_date_label's own
 # grammar, so what is accepted here is what the sequence allocator sees as taken. A commit count,
 # an upstream version or a sha never names a release. GPU_TUNED_ALLOW_COUNTER_LABEL=1 also accepts a
@@ -1288,10 +1289,10 @@ gpu_tuned_check_release_tag() {
     local tag="${1:-}"
     if [[ -n "$(gpu_tuned_date_label "${tag}")" ]]; then return 0; fi
     if [[ "${GPU_TUNED_ALLOW_COUNTER_LABEL:-}" == 1 ]]; then
-        echo "WARNING: gpu_tuned_check_release_tag: '${tag}' carries no date label (GPU_TUNED_ALLOW_COUNTER_LABEL=1); migrate this repo to v0.<YYYYMMDD>.<seq>-<variant>-cu<cuda> (native) or <variant>.cu<cuda>.<YYYYMMDD>[.<seq>] (wheel)." >&2
+        echo "WARNING: gpu_tuned_check_release_tag: '${tag}' carries no date label (GPU_TUNED_ALLOW_COUNTER_LABEL=1); migrate this repo to v<upstream-version>-<YYYYMMDD>.<seq>-<variant>-cu<cuda> (native) or <variant>.cu<cuda>.<YYYYMMDD>[.<seq>] (wheel)." >&2
         return 0
     fi
-    echo "ERROR: gpu_tuned_check_release_tag: release tag '${tag}' carries no date label. Native tags are v0.<YYYYMMDD>.<seq>-<variant>-cu<cuda> (gpu_tuned_native_tag); wheel tags end <variant>.cu<cuda>.<YYYYMMDD>[.<seq>] (docs/ARCHITECTURE.md E2)." >&2
+    echo "ERROR: gpu_tuned_check_release_tag: release tag '${tag}' carries no date label. Native tags are v<upstream-version>-<YYYYMMDD>.<seq>-<variant>-cu<cuda> or the older v0.<YYYYMMDD>.<seq>-<variant>-cu<cuda> (gpu_tuned_native_tag); wheel tags end <variant>.cu<cuda>.<YYYYMMDD>[.<seq>] (docs/ARCHITECTURE.md E2)." >&2
     return 1
 }
 
@@ -1325,13 +1326,15 @@ gpu_tuned_verify_resolves_in() {
 
 # gpu_tuned_newest_release_tag <variant> <cuda-tag> -- reads release tags on stdin (one per line, newest
 # first, as `gh release list` prints them) and prints the newest native tag for that variant and
-# toolkit: the highest v0.<YYYYMMDD>.<seq>-<variant>-<cuda-tag>, ranked by date then sequence as numbers
-# (.10 above .2), never by list order. A tag in an older form (v<ver>-<variant>-<cuda>[-g<sha>]) is never
+# toolkit among the date-label forms v<upstream-version>-<YYYYMMDD>.<seq>-<variant>-<cuda-tag> and the older
+# v0.<YYYYMMDD>.<seq>-<variant>-<cuda-tag> (version 0): ranked by upstream version, then date, then sequence,
+# each compared as numbers (.10 above .2, 1.10.0 above 1.9.0), never by list order. A tag in an older form (v<ver>-<variant>-<cuda>[-g<sha>]) is never
 # preferred over a date-label one; with no date-label tag it falls back to the first older-form tag, with
 # a NOTE on stderr, so a consumer keeps working until a date-label release exists (ARCHITECTURE.md E7).
 # Prints nothing and returns 1 if no tag matches at all.
 gpu_tuned_newest_release_tag() {
-    local variant="${1:-}" cuda="${2:-}" t label key best="" bestkey="" legacy=""
+    local variant="${1:-}" cuda="${2:-}" t label key ver vkey part best="" bestkey="" legacy=""
+    local -a vparts
     local tags=()
     if ! gpu_tuned_valid_variant "${variant}" || [[ ! "${cuda}" =~ ^cu[0-9]+$ ]]; then
         echo "ERROR: gpu_tuned_newest_release_tag: need <variant> <cuNNN>, got '${variant}' '${cuda}'." >&2
@@ -1339,10 +1342,13 @@ gpu_tuned_newest_release_tag() {
     fi
     while IFS= read -r t; do tags+=("${t}"); done
     for t in "${tags[@]}"; do
-        if [[ "${t}" == "v0."*"-${variant}-${cuda}" ]]; then
-            label="$(gpu_tuned_date_label "${t}")"
-            [[ -n "${label}" ]] || continue
-            key="$(printf '%s %012d' "${label%%.*}" "$(gpu_tuned_label_seq "${label}")")"
+        label="$(gpu_tuned_date_label "${t}")"
+        if [[ -n "${label}" && "${t}" =~ ^v[0-9.]+[-.][1-9][0-9]{7}\.[0-9]+-${variant}-${cuda}$ ]]; then
+            ver="$(gpu_tuned_native_tag_version "${t}")"
+            IFS=. read -r -a vparts <<< "${ver}"
+            vkey=""
+            for part in "${vparts[@]}" 0 0 0 0; do vkey+="$(printf '%012d' "${part}")"; done
+            key="$(printf '%s %s %012d' "${vkey:0:48}" "${label%%.*}" "$(gpu_tuned_label_seq "${label}")")"
             if [[ -z "${bestkey}" || "${key}" > "${bestkey}" ]]; then best="${t}"; bestkey="${key}"; fi
         elif [[ -z "${legacy}" && "${t}" =~ ^v[0-9].*-${variant}-${cuda}(-g[0-9a-f]+)?$ ]]; then
             legacy="${t}"
@@ -2034,28 +2040,57 @@ gpu_tuned_date_label() {
         local seq="${BASH_REMATCH[2]}"   # saved first: gpu_tuned_valid_date's own regex overwrites BASH_REMATCH
         gpu_tuned_valid_date "${label}" || label=""
         [ -z "${label}" ] || [ "${seq}" = 0 ] || label="${label}.${seq}"
+    elif [[ "${v}" =~ ^v(0|[1-9][0-9]*)(\.(0|[1-9][0-9]*)){0,3}-([1-9][0-9]{7})\.(0|[1-9][0-9]*)-[a-z][a-z0-9]*(-[a-z0-9]+)*-cu[0-9]+$ ]]; then
+        # native release tag v<upstream-version>-<date>.<seq>-<variant>-cu<cuda> (2026-11-13)
+        label="${BASH_REMATCH[4]}"
+        local vseq="${BASH_REMATCH[5]}"   # saved first: gpu_tuned_valid_date's own regex overwrites BASH_REMATCH
+        gpu_tuned_valid_date "${label}" || label=""
+        [ -z "${label}" ] || [ "${vseq}" = 0 ] || label="${label}.${vseq}"
     fi
     [ -z "${label}" ] || printf '%s\n' "${label}"
     return 0
 }
 
-# gpu_tuned_native_tag <variant> <cuda-tag> <label> -- the release tag of a native (non-wheel)
-# build: v0.<YYYYMMDD>.<seq>-<variant>-<cuda-tag>, e.g. v0.20261011.0-gb10-cu134. <label> is
+# gpu_tuned_native_tag_version <tag> -- the upstream version a native release tag names:
+# "1.0.0" for v1.0.0-<date>.<seq>-<variant>-cu<cuda>, "0" for the older v0.<date>.<seq>-... form
+# (which named no upstream version). Prints nothing (exit 0) for anything else.
+gpu_tuned_native_tag_version() {
+    local t="${1:-}"
+    [[ -n "$(gpu_tuned_date_label "${t}")" ]] || return 0
+    if [[ "${t}" =~ ^v0\.[1-9][0-9]{7}\. ]]; then printf '0\n'; return 0; fi
+    if [[ "${t}" =~ ^v([0-9.]+)-[1-9][0-9]{7}\. ]]; then printf '%s\n' "${BASH_REMATCH[1]}"; fi
+    return 0
+}
+
+# gpu_tuned_native_tag <variant> <cuda-tag> <label> [<upstream-version>] -- the release tag of a native
+# (non-wheel) build. With <upstream-version> (user decision 2026-11-13, docs/VERSIONING.md):
+# v<upstream-version>-<YYYYMMDD>.<seq>-<variant>-<cuda-tag>, e.g. v1.0.0-20261114.0-gb10-cu134, where the
+# version is the upstream release the source is based on (1-4 dot-separated canonical integers). Without
+# it, the older form v0.<YYYYMMDD>.<seq>-<variant>-<cuda-tag>, e.g. v0.20261011.0-gb10-cu134, for repos not
+# yet migrated; the 0 there names no version and ranks below any real one. <label> is
 # "<YYYYMMDD>[.<seq>]" from gpu_tuned_allocate_date_label; the sequence is always written here
 # (0 for a bare date), as a wheel version does too (user decision 2026-10-16). gpu_tuned_date_label reads the tag back.
 # A hyphenated variant stays hyphenated here -- v0.20261105.0-rtx50-win-cu134 -- because "-" is only a field
 # separator in a tag and the reader anchors on the trailing "-cu<digits>". Unlike a wheel label, which is dotted.
 gpu_tuned_native_tag() {
-    local variant="${1:-}" cuda_tag="${2:-}" label="${3:-}" date seq
+    local variant="${1:-}" cuda_tag="${2:-}" label="${3:-}" version="${4:-}" date seq
     date="${label%%.*}"
     seq="$(gpu_tuned_label_seq "${label}")"
     if ! gpu_tuned_valid_variant "${variant}" || [[ ! "${cuda_tag}" =~ ^cu[0-9]+$ ]] \
         || ! gpu_tuned_valid_date "${date}" || [[ ! "${seq}" =~ ^(0|[1-9][0-9]*)$ ]] \
         || [[ "${label}" != "${date}" && ( "${seq}" = 0 || "${label}" != "${date}.${seq}" ) ]]; then
-        echo "ERROR: gpu_tuned_native_tag: need <variant> <cuNNN> <YYYYMMDD[.seq]>, got '${variant}' '${cuda_tag}' '${label}'." >&2
+        echo "ERROR: gpu_tuned_native_tag: need <variant> <cuNNN> <YYYYMMDD[.seq]> [<upstream-version>], got '${variant}' '${cuda_tag}' '${label}' '${version}'." >&2
         return 1
     fi
-    printf 'v0.%s.%s-%s-%s\n' "${date}" "${seq}" "${variant}" "${cuda_tag}"
+    if [[ -z "${version}" ]]; then
+        printf 'v0.%s.%s-%s-%s\n' "${date}" "${seq}" "${variant}" "${cuda_tag}"
+        return 0
+    fi
+    if [[ ! "${version}" =~ ^(0|[1-9][0-9]*)(\.(0|[1-9][0-9]*)){0,3}$ || "${version}" == 0 ]]; then
+        echo "ERROR: gpu_tuned_native_tag: upstream version '${version}' must be 1-4 dot-separated canonical integers (e.g. 1.0.0), and not 0 alone." >&2
+        return 1
+    fi
+    printf 'v%s-%s.%s-%s-%s\n' "${version}" "${date}" "${seq}" "${variant}" "${cuda_tag}"
 }
 
 # gpu_tuned_nvcc_compact [cuda-home] -- the CUDA release that <cuda-home>/bin/nvcc reports,
