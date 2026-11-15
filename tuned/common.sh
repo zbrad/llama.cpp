@@ -3103,12 +3103,93 @@ PY
             [[ -s "${work}/reqs.txt" ]] || { echo "ERROR: the wheel resolved to no dependencies; the audit has nothing to check." >&2; rc=1; }
         fi
         if [[ ${rc} -eq 0 && ! -e "${work}/report.json.nodeps" ]]; then
-            "${work}/venv/bin/pip-audit" --no-deps --disable-pip -r "${work}/reqs.txt" --format json \
-                > "${work}/audit.json" 2> "${work}/audit.err" || true
-            [[ -s "${work}/audit.json" ]] || { sed 's/^/  /' "${work}/audit.err" >&2; echo "ERROR: pip-audit produced no result." >&2; rc=1; }
+            _gpu_tuned_pip_audit_verdict "${work}" "${GPU_TUNED_AUDIT_ALLOW_FILE:-${here}/audit_allow.txt}" || rc=1
         fi
-        if [[ ${rc} -eq 0 && ! -e "${work}/report.json.nodeps" ]]; then
-            python3 -I - "${work}/audit.json" "${GPU_TUNED_AUDIT_ALLOW_FILE:-${here}/audit_allow.txt}" <<'PY' || rc=1
+    } 2>&1 | tee "${log}"
+    # The block above runs in the pipeline's subshell, so its rc is lost; the RESULT line is the verdict.
+    grep -q '^RESULT: no vulnerable package has a fix available$' "${log}" || rc=1
+    rm -rf "${work}"
+    return "${rc}"
+}
+
+# gpu_tuned_audit_venv <venv-dir> <log-file> -- audit the Python packages installed in a build or test venv (H14): the
+# venv's `pip freeze --all` (pip and setuptools included), checked by pip-audit with the same pin, allow-file and verdict
+# as gpu_tuned_audit_deps (H9). H9 covers what a shipped wheel pulls in; this covers what a build ran with. A package with
+# a local version (torch==2.11.0+cpu, our own +gb10 wheels) is audited as its public base version, with a note: the
+# advisories for that release apply to it, and pip-audit would otherwise skip it. A direct-URL or editable install cannot
+# be audited and is listed as "not audited", never dropped. A check that cannot run is a failure (H4). Same rc and log
+# contract as H9: rc 0 only when the log ends with "RESULT: no vulnerable package has a fix available".
+gpu_tuned_audit_venv() {
+    local venv="${1:?usage: gpu_tuned_audit_venv <venv-dir> <log-file>}" log="${2:?usage: gpu_tuned_audit_venv <venv-dir> <log-file>}"
+    local here work rc=0
+    here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"  # tuned/, where the vendored common.sh sits
+    work="$(mktemp -d)"
+    {
+        echo "=== dependency audit: packages installed in ${venv} ==="
+        echo "date: $(date -u +%Y-%m-%dT%H:%M:%SZ); pip-audit ${GPU_TUNED_PIP_AUDIT_VERSION}"
+        [[ -x "${venv}/bin/python" ]] || { echo "ERROR: ${venv}/bin/python not found: not a venv." >&2; rc=1; }
+        if [[ ${rc} -eq 0 ]]; then
+            "${venv}/bin/python" -m pip freeze --all --disable-pip-version-check > "${work}/freeze.txt" 2> "${work}/freeze.err" \
+                || { sed 's/^/  /' "${work}/freeze.err" >&2; echo "ERROR: pip freeze failed in ${venv}." >&2; rc=1; }
+        fi
+        if [[ ${rc} -eq 0 ]]; then
+            python3 -I - "${work}/freeze.txt" > "${work}/reqs.txt" <<'PY' || rc=1
+import re, sys
+from urllib.parse import unquote
+n = 0
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if not line or line.startswith("#"):
+        continue
+    m = re.fullmatch(r"([A-Za-z0-9][A-Za-z0-9._-]*)==([^+\s]+)(\+\S+)?", line)
+    if not m:
+        # "name @ <url>": installed from a URL or file (our own tuned wheels). A wheel file name carries the version.
+        u = re.fullmatch(r"([A-Za-z0-9][A-Za-z0-9._-]*) @ (\S+)", line)
+        fname = u and unquote(u.group(2).split("#", 1)[0].split("?", 1)[0].rsplit("/", 1)[-1])  # drop #sha256=..., ?query
+        w = u and re.fullmatch(r"[^/-]+-([^-+/]+)(\+[^-/]+)?-[^/]+\.whl", fname)
+        if not w:
+            sys.stderr.write(f"not audited (not a pinned release or a wheel file): {line}\n")
+            continue
+        name, ver = u.group(1), w.group(1)
+        sys.stderr.write(f"audited as {name}=={ver} (installed from {fname})\n")
+        sys.stdout.write(f"{name}=={ver}\n")
+        n += 1
+        continue
+    name, ver, local = m.groups()
+    if local:
+        sys.stderr.write(f"audited as {name}=={ver} (installed {name}=={ver}{local}, a local version)\n")
+    sys.stdout.write(f"{name}=={ver}\n")
+    n += 1
+if not n:
+    sys.stderr.write("ERROR: the venv lists no pinned packages; the audit has nothing to check.\n")
+    sys.exit(1)
+PY
+        fi
+        if [[ ${rc} -eq 0 ]]; then
+            python3 -m venv "${work}/venv" \
+                && "${work}/venv/bin/python" -m pip install --quiet --disable-pip-version-check "pip-audit==${GPU_TUNED_PIP_AUDIT_VERSION}" \
+                || { echo "ERROR: could not set up the audit venv (network?)." >&2; rc=1; }
+        fi
+        if [[ ${rc} -eq 0 ]]; then
+            _gpu_tuned_pip_audit_verdict "${work}" "${GPU_TUNED_AUDIT_ALLOW_FILE:-${here}/audit_allow.txt}" || rc=1
+        fi
+    } 2>&1 | tee "${log}"
+    # The block above runs in the pipeline's subshell, so its rc is lost; the RESULT line is the verdict.
+    grep -q '^RESULT: no vulnerable package has a fix available$' "${log}" || rc=1
+    rm -rf "${work}"
+    return "${rc}"
+}
+
+# _gpu_tuned_pip_audit_verdict <work-dir> <allow-file> -- run pip-audit (from <work-dir>/venv) on <work-dir>/reqs.txt
+# (name==version lines) and print the H9 report: "not audited" lines, "audited N packages", one ACCEPTED/VIOLATION/WARNING
+# line per advisory, and the RESULT verdict line. rc 0 only on "RESULT: no vulnerable package has a fix available".
+# Shared by gpu_tuned_audit_deps (H9) and gpu_tuned_audit_venv (H14).
+_gpu_tuned_pip_audit_verdict() {
+    local work="${1:?}" allow="${2:?}"
+    "${work}/venv/bin/pip-audit" --no-deps --disable-pip -r "${work}/reqs.txt" --format json \
+        > "${work}/audit.json" 2> "${work}/audit.err" || true
+    [[ -s "${work}/audit.json" ]] || { sed 's/^/  /' "${work}/audit.err" >&2; echo "ERROR: pip-audit produced no result." >&2; return 1; }
+    python3 -I - "${work}/audit.json" "${allow}" <<'PY'
 import json, sys
 audit_path, allow_path = sys.argv[1], sys.argv[2]
 allowed = {}
@@ -3149,12 +3230,6 @@ for dep in deps:
 sys.stdout.write("RESULT: " + ("FAILED" if failed else "no vulnerable package has a fix available") + "\n")
 sys.exit(1 if failed else 0)
 PY
-        fi
-    } 2>&1 | tee "${log}"
-    # The block above runs in the pipeline's subshell, so its rc is lost; the RESULT line is the verdict.
-    grep -q '^RESULT: no vulnerable package has a fix available$' "${log}" || rc=1
-    rm -rf "${work}"
-    return "${rc}"
 }
 
 # gpu_tuned_install_setuptools -- put the current setuptools release in the active build venv, last (C8). setuptools is a
