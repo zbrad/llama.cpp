@@ -4,6 +4,7 @@
 # with no line here uses the system libnccl2 whose version tuned/common-data/toolkits/<id>.env pins
 # (TOOLKIT_NCCL_VERSION); a toolkit that declares "none" and has no line here cannot be built (tuned/env.sh).
 # Move a pin deliberately, in its own commit: the NCCL in the package follows this line.
+gb10 cu133 v2.31.2-20261114.0-gb10-cu133
 gb10 cu134 v0.20261018.0-gb10-cu134
 gb10 cu135 v0.20261113.0-gb10-cu135
 rtx40 cu134 v0.20261107.0-rtx40-cu134
