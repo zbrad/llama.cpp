@@ -99,6 +99,12 @@ gpu_tuned_verify_cuda_compat "${CUDA_SO}" "${CUDA_VER}"
 # tools/ui sources as this checkout; never upstream's lockfile built or downloaded by CMake.
 UI_BUILD="$(bash "${REPODIR}/tuned/check-ui.sh" "${BUILD_DIR}")" || exit 1
 
+# The test venv tuned/full_test.sh ran the converter tests with is audited (H14, gpu_tuned_audit_venv): a known-vulnerable
+# package that has a fixed release fails the package, as for a wheel's dependencies (H9). Accept one in
+# tuned/audit_allow.txt with a reason; tuned/test-requirements.txt says which upstream pins were raised and why.
+gpu_tuned_audit_venv "${LLAMA_TUNED_BUILD_ROOT}/test-venv" "${LLAMA_TUNED_BUILD_ROOT}/venv-audit.log" \
+    || { echo "ERROR: the test venv audit failed (see above and ${LLAMA_TUNED_BUILD_ROOT}/venv-audit.log)." >&2; exit 1; }
+
 # Release identity: the native tag v<upstream-version>-<date>.<seq>-<variant>-<cuda> that tuned/build.sh allocated and compiled into
 # the binary (`llama-server --version` prints it), read from the build tree and checked: it must be a valid
 # date-label tag for this variant and toolkit, and the packaged binary must print it. Not recomputed here.
