@@ -14,9 +14,13 @@
 #     llama.cpp checkout) and saved into llama.cpp's own models/templates/.
 #     nano's GGUF carries its own embedded template already -- no override
 #     needed there.
-#   - --load-mode none: replaces the deprecated --no-mmap. GB10's cold-mmap
-#     load path is ~259 MB/s (synchronous cudaMemcpyAsync per tensor);
-#     direct read hits ~1131 MB/s.
+#   - --load-mode dio when the model file is on a local ext4 or xfs, else
+#     --load-mode none (LLMSRV_LOAD_MODE overrides). Measured 2026-11-16 on a
+#     GB10 node, Nemotron-3-Super UD-Q4_K_XL (83.8 GB) from NVMe ext4, cold:
+#     dio 8.7 s to ready at 11.9 GB/s, none 72.6 s at 1.18 GB/s (the "~1131
+#     MB/s direct read" this note used to cite was none; GB10's cold-mmap path
+#     was ~259 MB/s). Not dio on ZFS: O_DIRECT skips the ARC, and a dio load
+#     from a ZFS-on-USB pool took 13m46s against 8.5 s from NVMe.
 #   - --reasoning-preserve: the extracted template supports it
 #     (chat_template_caps.supports_preserve_reasoning), and llama-server's
 #     own startup log recommends turning it on.
@@ -61,7 +65,8 @@
 #   search_paths.local).
 #   Env overrides: LLMSRV_HOME (explicit install dir, see above), LLMSRV_HOST,
 #   LLMSRV_MODEL_PATHS (see above), HF_HUB_CACHE/HF_HOME (see above),
-#   LLMSRV_CTX_SIZE (ceiling only now -- still clamped down to the model's
+#   LLMSRV_LOAD_MODE (llama-server --load-mode; default dio on local
+#   ext4/xfs, none elsewhere), LLMSRV_CTX_SIZE (ceiling only now -- still clamped down to the model's
 #   trained context if that's smaller), LLMSRV_MEM_MARGIN_GIB,
 #   LLMSRV_PRIMARY_HOST, LLMSRV_PORT, LLMSRV_START_TIMEOUT_SEC (how long to
 #   wait for /health before giving up), LLMSRV_CRITICAL_MEM_GIB (abort
@@ -415,6 +420,17 @@ WARN
     # it's real, not a mistake, unlike qwen3-4b's).
     CACHE_TYPE_K="f16"
     CACHE_TYPE_V="f16"
+    # Load mode: direct I/O only where it is fast (local ext4/xfs); see the header.
+    local model_fs
+    model_fs="$(findmnt -n -o FSTYPE -T "$(readlink -f "$MODEL")" 2>/dev/null || true)"
+    if [[ -n "${LLMSRV_LOAD_MODE:-}" ]]; then
+        LOAD_MODE="$LLMSRV_LOAD_MODE"
+    elif [[ "$model_fs" == ext4 || "$model_fs" == xfs ]]; then
+        LOAD_MODE="dio"
+    else
+        LOAD_MODE="none"
+    fi
+    echo "llmsrv.sh: --load-mode ${LOAD_MODE} (model on ${model_fs:-unknown filesystem})" >&2
     EXTRA_LLAMA_ARGS=()
     [[ -n "$CHAT_TEMPLATE" ]] && EXTRA_LLAMA_ARGS+=(--chat-template-file "$CHAT_TEMPLATE")
 
@@ -563,7 +579,7 @@ WorkingDirectory=$(dirname "$LLAMA_SERVER")
 # "-" prefix: a redirector/Postgres outage must never block start/stop of the real server.
 ExecStartPre=-/home/zbrad/gh/redirector/hooks/register.sh register --name "${MODEL_ALIAS}" --slug "${MODEL_LABEL}" --description "LLM (llama.cpp)" --url "http://$(hostname):${PORT}"
 ExecStopPost=-/home/zbrad/gh/redirector/hooks/register.sh deregister --slug "${MODEL_LABEL}"
-ExecStart=${LLAMA_SERVER} --model ${MODEL} --alias "${MODEL_ALIAS}" ${EXTRA_LLAMA_ARGS[@]} --ctx-size ${CTX_SIZE} --n-gpu-layers 99 --load-mode none --threads 8 --temp 1.0 --top-p 0.95 --min-p 0.01 --reasoning-preserve --host ${HOST} --port ${PORT}
+ExecStart=${LLAMA_SERVER} --model ${MODEL} --alias "${MODEL_ALIAS}" ${EXTRA_LLAMA_ARGS[@]} --ctx-size ${CTX_SIZE} --n-gpu-layers 99 --load-mode ${LOAD_MODE} --threads 8 --temp 1.0 --top-p 0.95 --min-p 0.01 --reasoning-preserve --host ${HOST} --port ${PORT}
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
