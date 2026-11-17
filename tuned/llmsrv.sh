@@ -14,13 +14,18 @@
 #     llama.cpp checkout) and saved into llama.cpp's own models/templates/.
 #     nano's GGUF carries its own embedded template already -- no override
 #     needed there.
-#   - --load-mode dio when the model file is on a local ext4 or xfs, else
-#     --load-mode none (LLMSRV_LOAD_MODE overrides). Measured 2026-11-16 on a
-#     GB10 node, Nemotron-3-Super UD-Q4_K_XL (83.8 GB) from NVMe ext4, cold:
-#     dio 8.7 s to ready at 11.9 GB/s, none 72.6 s at 1.18 GB/s (the "~1131
-#     MB/s direct read" this note used to cite was none; GB10's cold-mmap path
-#     was ~259 MB/s). Not dio on ZFS: O_DIRECT skips the ARC, and a dio load
-#     from a ZFS-on-USB pool took 13m46s against 8.5 s from NVMe.
+#   - --load-mode dio when the model file is on ext4/xfs whose disks are all
+#     solid-state and not USB (load_mode_for), else --load-mode none
+#     (LLMSRV_LOAD_MODE overrides). Measured 2026-11-16 on a GB10 node,
+#     Nemotron-3-Super UD-Q4_K_XL (83.8 GB) from NVMe ext4, cold: dio 8.7 s to
+#     ready at 11.9 GB/s, none 72.6 s at 1.18 GB/s (the "~1131 MB/s direct
+#     read" this note used to cite was none; GB10's cold-mmap path was ~259
+#     MB/s). ZFS, network filesystems, USB and rotational disks keep none.
+#     The slow ZFS case seen (a dio load taking 13m46s against 8.5 s from
+#     NVMe) was a pool on one USB hard disk: ~100 MB/s is that disk's own
+#     speed, so the device, not O_DIRECT, was the cause. On such a pool a warm
+#     ARC can serve a reload that dio would read from the disk again.
+#     (Corrected 2026-11-16: this note first blamed O_DIRECT skipping the ARC.)
 #   - --reasoning-preserve: the extracted template supports it
 #     (chat_template_caps.supports_preserve_reasoning), and llama-server's
 #     own startup log recommends turning it on.
@@ -65,8 +70,8 @@
 #   search_paths.local).
 #   Env overrides: LLMSRV_HOME (explicit install dir, see above), LLMSRV_HOST,
 #   LLMSRV_MODEL_PATHS (see above), HF_HUB_CACHE/HF_HOME (see above),
-#   LLMSRV_LOAD_MODE (llama-server --load-mode; default dio on local
-#   ext4/xfs, none elsewhere), LLMSRV_CTX_SIZE (ceiling only now -- still clamped down to the model's
+#   LLMSRV_LOAD_MODE (llama-server --load-mode; default dio on ext4/xfs over
+#   solid-state non-USB disks, none elsewhere), LLMSRV_CTX_SIZE (ceiling only now -- still clamped down to the model's
 #   trained context if that's smaller), LLMSRV_MEM_MARGIN_GIB,
 #   LLMSRV_PRIMARY_HOST, LLMSRV_PORT, LLMSRV_START_TIMEOUT_SEC (how long to
 #   wait for /health before giving up), LLMSRV_CRITICAL_MEM_GIB (abort
@@ -377,6 +382,39 @@ model_resolution_report() {
 # the server (check_mem/write_unit), not for status/stop, so it's a function
 # called explicitly from do_start rather than unconditional top-level code:
 # avoids a GGUF read (and its capping-message output) on every invocation.
+# load_mode_for <file> -- print "<mode> <reason>": "dio" when <file> is on ext4 or
+# xfs and every disk under its block device (lsblk -s: partitions, LVM, crypt down
+# to the disks) is solid-state (ROTA 0) and not on USB; otherwise "none". ZFS,
+# network and other filesystems have no block device here, so they get none.
+load_mode_for() {
+    local real fs src line disks=0 slow=""
+    real="$(readlink -f "$1")"
+    fs="$(findmnt -n -o FSTYPE -T "$real" 2>/dev/null || true)"
+    src="$(findmnt -n -o SOURCE -T "$real" 2>/dev/null || true)"
+    if [[ "$fs" != ext4 && "$fs" != xfs ]]; then
+        echo "none ${fs:-unknown}-filesystem"
+        return 0
+    fi
+    if [[ "$src" != /dev/* ]]; then
+        echo "none ${fs}-on-${src:-unknown}"
+        return 0
+    fi
+    while IFS= read -r line; do
+        [[ "$line" =~ ^TYPE=\"([^\"]*)\"\ TRAN=\"([^\"]*)\"\ ROTA=\"([^\"]*)\"$ ]] || continue
+        [[ "${BASH_REMATCH[1]}" == disk ]] || continue
+        disks=$((disks + 1))
+        if [[ "${BASH_REMATCH[3]}" != 0 ]]; then slow="rotational-disk"; fi
+        if [[ "${BASH_REMATCH[2]}" == usb ]]; then slow="usb-disk"; fi
+    done < <(lsblk -s -n -P -o TYPE,TRAN,ROTA "$src" 2>/dev/null)
+    if (( disks == 0 )); then
+        echo "none ${fs}-on-unresolved-device"
+    elif [[ -n "$slow" ]]; then
+        echo "none ${fs}-on-${slow}"
+    else
+        echo "dio ${fs}-on-solid-state"
+    fi
+}
+
 resolve_launch_config() {
     # --n-gpu-layers 99 (in ExecStart below) is a fixed "offload every
     # layer" idiom, not a literal layer count -- llama-server clamps it to
@@ -420,17 +458,15 @@ WARN
     # it's real, not a mistake, unlike qwen3-4b's).
     CACHE_TYPE_K="f16"
     CACHE_TYPE_V="f16"
-    # Load mode: direct I/O only where it is fast (local ext4/xfs); see the header.
-    local model_fs
-    model_fs="$(findmnt -n -o FSTYPE -T "$(readlink -f "$MODEL")" 2>/dev/null || true)"
+    # Load mode: direct I/O only where it is fast; see the header and load_mode_for.
+    local load_reason
     if [[ -n "${LLMSRV_LOAD_MODE:-}" ]]; then
         LOAD_MODE="$LLMSRV_LOAD_MODE"
-    elif [[ "$model_fs" == ext4 || "$model_fs" == xfs ]]; then
-        LOAD_MODE="dio"
+        load_reason="LLMSRV_LOAD_MODE"
     else
-        LOAD_MODE="none"
+        read -r LOAD_MODE load_reason <<< "$(load_mode_for "$MODEL")"
     fi
-    echo "llmsrv.sh: --load-mode ${LOAD_MODE} (model on ${model_fs:-unknown filesystem})" >&2
+    echo "llmsrv.sh: --load-mode ${LOAD_MODE} (${load_reason})" >&2
     EXTRA_LLAMA_ARGS=()
     [[ -n "$CHAT_TEMPLATE" ]] && EXTRA_LLAMA_ARGS+=(--chat-template-file "$CHAT_TEMPLATE")
 
