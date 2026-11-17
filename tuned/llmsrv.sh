@@ -22,10 +22,13 @@
 #     read" this note used to cite was none; GB10's cold-mmap path was ~259
 #     MB/s). ZFS, network filesystems, USB and rotational disks keep none.
 #     The slow ZFS case seen (a dio load taking 13m46s against 8.5 s from
-#     NVMe) was a pool on one USB hard disk: ~100 MB/s is that disk's own
-#     speed, so the device, not O_DIRECT, was the cause. On such a pool a warm
-#     ARC can serve a reload that dio would read from the disk again.
-#     (Corrected 2026-11-16: this note first blamed O_DIRECT skipping the ARC.)
+#     NVMe) was a pool on one USB hard disk, whose own speed (~100 MB/s)
+#     accounts for it. The GB10 nodes' ZFS kernel module is 2.4.1 (shipped
+#     with the kernel; the userland tools are 2.2.2), and OpenZFS honours
+#     O_DIRECT since 2.3, so dio there also skips the ARC that could serve a
+#     warm reload. (Corrected twice on 2026-11-16: first "O_DIRECT skips the
+#     ARC" alone, then "the device, not O_DIRECT", read from the 2.2.2 tools'
+#     version instead of the module's.)
 #   - --reasoning-preserve: the extracted template supports it
 #     (chat_template_caps.supports_preserve_reasoning), and llama-server's
 #     own startup log recommends turning it on.
